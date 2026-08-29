@@ -1,6 +1,7 @@
 #pragma once
 #include <cstdint>
 #include <vector>
+#include <cstddef>
 
 
 // ROS2 independent map representation - for testing

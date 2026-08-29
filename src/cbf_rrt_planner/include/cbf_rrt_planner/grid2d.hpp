@@ -1,5 +1,6 @@
 #pragma once
 #include <vector>
+#include <cstddef>
 
 //representation of grids (used in psf etc.)
 namespace cbf_rrt_planner
