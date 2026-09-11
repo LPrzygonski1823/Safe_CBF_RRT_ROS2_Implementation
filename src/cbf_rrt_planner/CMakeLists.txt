@@ -8,6 +8,7 @@ find_package(geometry_msgs REQUIRED)
 find_package(tf2_ros REQUIRED)
 find_package(tf2_geometry_msgs REQUIRED)
 find_package(Threads REQUIRED)
+find_package(std_srvs REQUIRED)
 
 add_executable(planner_node
   src/planner_node.cpp
@@ -19,6 +20,7 @@ add_executable(planner_node
   src/rrt_star_planner.cpp
   src/planning_metrics.cpp
   src/ros_conversions.cpp
+  src/path_smoother.cpp
 )
 
 target_include_directories(planner_node PUBLIC
@@ -27,7 +29,7 @@ target_include_directories(planner_node PUBLIC
 
 target_compile_features(planner_node PUBLIC cxx_std_17)
 
-ament_target_dependencies(planner_node rclcpp nav_msgs geometry_msgs tf2_ros tf2_geometry_msgs)
+ament_target_dependencies(planner_node rclcpp nav_msgs geometry_msgs tf2_ros tf2_geometry_msgs std_srvs)
 
 target_link_libraries(planner_node Threads::Threads)
 

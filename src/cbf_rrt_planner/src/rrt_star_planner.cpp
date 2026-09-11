@@ -1,4 +1,5 @@
 #include "cbf_rrt_planner/rrt_star_planner.hpp"
+#include "cbf_rrt_planner/cbf_utils.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -61,44 +62,13 @@ namespace cbf_rrt_planner
 
     double RrtStarPlanner::averageH(double x1, double y1, double x2, double y2) const
     {
-        int n = std::max(2, params_.cbf_samples_per_edge);
-        double sum_h = 0.0;
-        for (int i = 0; i < n; ++i) {
-            double t = static_cast<double>(i) / (n - 1);
-            double x = x1 + t * (x2 - x1);
-            double y = y1 + t * (y2 - y1);
-            sum_h += psf_generator_->getH(x, y);
-        }
-        return sum_h / n;
+        return computeAverageH(*psf_generator_, x1, y1, x2, y2, params_.edge_sample_step);
     }
 
     bool RrtStarPlanner::passesCbfCondition(double x1, double y1, double x2, double y2) const
     {
-        double dx = x2 - x1;
-        double dy = y2 - y1;
-        double length = std::hypot(dx, dy);
-        if (length < 1e-9) {return true;}
-
-        double vx = (dx / length) * params_.nominal_velocity;
-        double vy = (dy / length) * params_.nominal_velocity;
-
-        int n = std::max(2, params_.cbf_samples_per_edge);
-        for (int i = 0; i < n; ++i) {
-            double t = static_cast<double>(i) / (n - 1);
-            double x = x1 + t * dx;
-            double y = y1 + t * dy;
-
-            double h = psf_generator_->getH(x, y);
-            double dhdx, dhdy;
-            psf_generator_->getGradientH(x, y, dhdx, dhdy);
-
-            double lhs = dhdx * vx + dhdy * vy;
-            double rhs = -params_.kappa * h;
-            if (lhs < rhs) {
-                return false;
-            }
-        }
-        return true;
+        return checkCbfCondition(*psf_generator_, x1, y1, x2, y2, 
+                                 params_.kappa, params_.nominal_velocity, params_.edge_sample_step);
     }
 
     double RrtStarPlanner::edgeCost(double x1, double y1, double x2, double y2) const
@@ -111,8 +81,7 @@ namespace cbf_rrt_planner
         return params_.safety_weight_c * L + (1.0 - params_.safety_weight_c) / h_bar;
     }
 
-    bool RrtStarPlanner::isEdgeAdmissible(
-    double x1, double y1, double x2, double y2, PlanningResult & metrics_out) const
+    bool RrtStarPlanner::isEdgeAdmissible(double x1, double y1, double x2, double y2, PlanningResult & metrics_out) const
     {
         if (!collision_checker_.isEdgeFree(x1, y1, x2, y2)) {
             return false;
@@ -184,8 +153,7 @@ namespace cbf_rrt_planner
         children_.clear();
         children_.push_back({});
 
-        int best_goal_idx = -1;
-        double best_goal_cost = std::numeric_limits<double>::infinity();
+        std::vector<int> goal_node_indices;
 
         for (int iter = 0; iter < params_.max_iterations; ++iter) {
             auto [sx, sy] = sampleRandomPoint(goal_x, goal_y);
@@ -238,39 +206,50 @@ namespace cbf_rrt_planner
             if (distance(nx, ny, goal_x, goal_y) <= params_.goal_tolerance) {
                 if (isEdgeAdmissible(nx, ny, goal_x, goal_y, result)) {
                     double goal_cost = tree[new_idx].cost_to_come + edgeCost(nx, ny, goal_x, goal_y);
-                    if (goal_cost < best_goal_cost) {
-                    best_goal_cost = goal_cost;
                     tree.push_back({goal_x, goal_y, goal_cost, new_idx});
                     int goal_idx = static_cast<int>(tree.size()) - 1;
                     children_.push_back({});
                     addChild(new_idx, goal_idx);
-                    spatial_grid_.insert(goal_idx, goal_x, goal_y);
-                    best_goal_idx = goal_idx;
-                    }
+                    goal_node_indices.push_back(goal_idx);
                 }
             }
         }
 
         result.iterations_used = params_.max_iterations;
 
-        if (best_goal_idx != -1) {
+        int best_goal_idx = -1;
+        double min_final_cost = std::numeric_limits<double>::infinity();
+        for (int idx : goal_node_indices)
+        {
+            if (tree[idx].cost_to_come < min_final_cost)
+            {
+                min_final_cost = tree[idx].cost_to_come;
+                best_goal_idx = idx;
+            }
+        }
+
+        if (best_goal_idx != -1)
+        {
             result.success = true;
             result.path = reconstructPath(tree, best_goal_idx);
 
             double total_len = 0.0;
             double weighted_h_sum = 0.0;
-            for (size_t i = 0; i + 1 < result.path.size(); ++i) {
+            for (size_t i = 0; i + 1 < result.path.size(); ++i)
+            {
                 double x1 = result.path[i].first, y1 = result.path[i].second;
                 double x2 = result.path[i + 1].first, y2 = result.path[i + 1].second;
                 double seg_len = distance(x1, y1, x2, y2);
                 total_len += seg_len;
-                if (params_.enable_cbf && psf_generator_ != nullptr) {
+                if (params_.enable_cbf && psf_generator_ != nullptr)
+                {
                     weighted_h_sum += averageH(x1, y1, x2, y2) * seg_len;
                 }
             }
             result.total_length = total_len;
-            if (params_.enable_cbf && total_len > 1e-9) {
-            result.mean_h = weighted_h_sum / total_len;
+            if (params_.enable_cbf && total_len > 1e-9)
+            {
+                result.mean_h = weighted_h_sum / total_len;
             }
         }
 

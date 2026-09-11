@@ -20,8 +20,8 @@ namespace cbf_rrt_planner
     struct PlannerParams
     {
         // base RRT* parameters
-        double  step_size = 2.0;
-        int     max_iterations = 2000;
+        double  step_size = 1.5;
+        int     max_iterations = 10000;
         double  goal_bias = 0.05; // probability of sampling the goal directly
         double  goal_tolerance = 1.0;
 
@@ -38,14 +38,14 @@ namespace cbf_rrt_planner
         double  gamma = 5.0;  // scaling factor in r_n = gamma*sqrt(log(n)/n)
 
         // safe-CBF-RRT* parameters (used only when enable_cbf == true)
-        bool enable_cbf = false;
-        double  kappa = 20.0; // formula (3)
-        double  safety_weight_c = 1.0; // formula (6): c=1 length, c=0 safety
-        double  nominal_velocity = 1.0; // assumed constant velocity along the edge
-        int     cbf_samples_per_edge = 5;
+        bool enable_cbf = true;
+        double  kappa = 3.0; // formula (3)
+        double  safety_weight_c = 0.05; // formula (6): c=1 length, c=0 safety
+        double  nominal_velocity = 0.8; // assumed constant velocity along the edge
+        double  edge_sample_step = 0.025; // fixed spatial distance [m] between samples for CBF (replaces cbf_samples_per_edge)
 
         // common geometric collision parameter
-        int occupied_threshold   = 65;
+        int occupied_threshold = 65;
     };
 
     // planner execution result ready to be published/exported to metrics

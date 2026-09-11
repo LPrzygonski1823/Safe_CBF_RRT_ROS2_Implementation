@@ -33,6 +33,10 @@ namespace cbf_rrt_planner
         // diagnostic tool, export the h, u_x, u_y fields to CSV files for visual verification in visualize_psf.py
         void exportToCsv(const std::string & directory_path) const;
 
+        void setOccupiedThreshold(int threshold) { 
+            segmentation_ = ObstacleSegmentation(threshold, true); 
+        }
+
     private:
         ObstacleSegmentation segmentation_;
         PoissonSolver solver_;

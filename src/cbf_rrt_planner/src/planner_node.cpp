@@ -10,6 +10,9 @@
 #include "nav_msgs/msg/path.hpp"
 #include "geometry_msgs/msg/pose_stamped.hpp"
 #include "geometry_msgs/msg/transform_stamped.hpp"
+#include "std_srvs/srv/trigger.hpp"
+#include "cbf_rrt_planner/path_smoother.hpp"
+#include "cbf_rrt_planner/cbf_utils.hpp"
 
 #include "tf2/exceptions.h"
 #include "tf2_geometry_msgs/tf2_geometry_msgs.hpp"
@@ -49,9 +52,33 @@ public:
 
     path_pub_ = this->create_publisher<nav_msgs::msg::Path>("/planned_path", 10);
 
+    refresh_srv_ = this->create_service<std_srvs::srv::Trigger>(
+      "/refresh_map",
+      [this](const std::shared_ptr<std_srvs::srv::Trigger::Request>,
+             std::shared_ptr<std_srvs::srv::Trigger::Response> response) {
+        if (psf_future_.valid() && psf_future_.wait_for(0s) != std::future_status::ready) {
+          response->success = false;
+          response->message = "PSF generation currently in progress - cannot refresh yet.";
+          return;
+        }
+        
+        psf_generation_triggered_ = false;
+        psf_ready_ = false;
+        
+        triggerPsfGenerationIfNeeded(this->get_parameter("occupied_threshold").as_int());
+
+        response->success = true;
+        response->message = "Map re-frozen and PSF generation started in background.";
+        RCLCPP_INFO(this->get_logger(), "Map refresh triggered manually.");
+      });
+
+
     RCLCPP_INFO(
       this->get_logger(),
       "Planner node initialized, waiting for the map, odometry and goal...");
+    
+    timer_ = this->create_wall_timer(
+      500ms, std::bind(&PlannerNode::pollPsfReadiness, this));
   }
 
 private:
@@ -69,10 +96,10 @@ private:
     this->declare_parameter<double>("kappa", 20.0);
     this->declare_parameter<double>("safety_weight_c", 1.0);
     this->declare_parameter<double>("nominal_velocity", 1.0);
-    this->declare_parameter<int>("cbf_samples_per_edge", 5);
     this->declare_parameter<int>("occupied_threshold", 65);
+    this->declare_parameter<bool>("enable_smoothing", false);
 
-    this->declare_parameter<std::string>("metrics_csv_path", "/tmp/psf_debug/planning_metrics.csv");
+    this->declare_parameter<std::string>("metrics_csv_path", "/workspace/src/cbf_rrt_planner/maps/psf_debug/planning_metrics.csv");
     this->declare_parameter<std::string>("path_frame_id", "map");
     this->declare_parameter<std::string>("odom_topic", "/odometry/filtered");
   }
@@ -86,13 +113,12 @@ private:
     params.goal_tolerance = this->get_parameter("goal_tolerance").as_double();
     params.neighbor_radius = this->get_parameter("neighbor_radius").as_double();
     params.gamma = this->get_parameter("gamma").as_double();
+    params.edge_sample_step = current_grid_data_.resolution * 0.5;
 
     params.enable_cbf = this->get_parameter("enable_cbf").as_bool();
     params.kappa = this->get_parameter("kappa").as_double();
     params.safety_weight_c = this->get_parameter("safety_weight_c").as_double();
     params.nominal_velocity = this->get_parameter("nominal_velocity").as_double();
-    params.cbf_samples_per_edge =
-      static_cast<int>(this->get_parameter("cbf_samples_per_edge").as_int());
     params.occupied_threshold =
       static_cast<int>(this->get_parameter("occupied_threshold").as_int());
     return params;
@@ -131,16 +157,23 @@ private:
     if (first_time) {
       RCLCPP_INFO(
         this->get_logger(),
-        "First map received: %d x %d (resolution %.3f m/cell). "
-        "Waiting for a goal to trigger PSF generation.",
+        "First map received: %d x %d (resolution %.3f m/cell).",
         current_grid_data_.width, current_grid_data_.height, current_grid_data_.resolution);
+        
+      if (this->get_parameter("enable_cbf").as_bool()) {
+          RCLCPP_INFO(this->get_logger(), "Automatically triggering initial PSF generation...");
+          triggerPsfGenerationIfNeeded(this->get_parameter("occupied_threshold").as_int());
+      }
     }
   }
 
-  void triggerPsfGenerationIfNeeded()
+  void triggerPsfGenerationIfNeeded(int occupied_threshold)
   {
     if (psf_generation_triggered_ || !map_received_) {return;}
     psf_generation_triggered_ = true;
+    
+    // safe: applied before async thread starts
+    psf_generator_.setOccupiedThreshold(occupied_threshold);
 
     auto grid_data_snapshot = current_grid_data_;
     RCLCPP_INFO(
@@ -164,10 +197,11 @@ private:
         psf_future_.get();
         psf_ready_ = true;
 
-        std::filesystem::create_directories("/tmp/psf_debug");
-        psf_generator_.exportToCsv("/tmp/psf_debug");
+        std::string debug_dir = "/workspace/src/cbf_rrt_planner/maps/psf_debug";
+        std::filesystem::create_directories(debug_dir);
+        psf_generator_.exportToCsv(debug_dir);
         RCLCPP_INFO(
-          this->get_logger(), "PSF ready (%zu obstacles). Exported to /tmp/psf_debug.",
+          this->get_logger(), "PSF ready (%zu obstacles). Exported.",
           psf_generator_.obstacleCount());
       } catch (const std::exception & e) {
         RCLCPP_ERROR(this->get_logger(), "PSF generation failed: %s", e.what());
@@ -213,7 +247,6 @@ private:
     cbf_rrt_planner::PlannerParams params = loadPlannerParams();
 
     if (params.enable_cbf) {
-      triggerPsfGenerationIfNeeded();
       pollPsfReadiness();
 
       if (!psf_ready_) {
@@ -255,15 +288,33 @@ private:
       "Planning SUCCESS: length=%.2f mean_h=%.4f points=%zu rejection_ratio=%.3f",
       result.total_length, result.mean_h, result.path.size(), result.rejectionRatio());
 
+    bool enable_smoothing = this->get_parameter("enable_smoothing").as_bool();
+
+    if (enable_smoothing) {
+      cbf_rrt_planner::PathSmoother smoother(checker, psf_ptr, params);
+      result.path = smoother.smoothPath(result.path);
+      RCLCPP_INFO(this->get_logger(), "Path smoothed. Remaining points: %zu", result.path.size());
+
+      double final_len = 0.0;
+      double final_weighted_h_sum = 0.0;
+      for (size_t i = 0; i + 1 < result.path.size(); ++i) {
+          double x1 = result.path[i].first, y1 = result.path[i].second;
+          double x2 = result.path[i + 1].first, y2 = result.path[i + 1].second;
+          double seg_len = std::hypot(x2 - x1, y2 - y1);
+          final_len += seg_len;
+          if (params.enable_cbf && psf_ptr != nullptr) {
+              final_weighted_h_sum += cbf_rrt_planner::computeAverageH(*psf_ptr, x1, y1, x2, y2, params.edge_sample_step) * seg_len;
+          }
+      }
+      result.total_length = final_len;
+      if (params.enable_cbf && final_len > 1e-9) {
+          result.mean_h = final_weighted_h_sum / final_len;
+      }
+    }
+
     auto path_msg = cbf_rrt_planner::toPathMsg(
       result, this->get_parameter("path_frame_id").as_string(), this->now());
     path_pub_->publish(path_msg);
-
-    std::string csv_path = this->get_parameter("metrics_csv_path").as_string();
-    std::filesystem::create_directories(std::filesystem::path(csv_path).parent_path());
-    std::string label = params.enable_cbf ?
-      ("cbf_c" + std::to_string(params.safety_weight_c)) : "baseline_rrt_star";
-    cbf_rrt_planner::PlanningMetricsLogger::appendResult(csv_path, label, result);
   }
 
   // subs/publishers
@@ -271,6 +322,8 @@ private:
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr odom_sub_;
   rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr goal_sub_;
   rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr path_pub_;
+  rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr refresh_srv_;
+  rclcpp::TimerBase::SharedPtr timer_;
 
   // tf
   std::unique_ptr<tf2_ros::Buffer> tf_buffer_;
