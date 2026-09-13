@@ -71,14 +71,27 @@ namespace cbf_rrt_planner
                                  params_.kappa, params_.nominal_velocity, params_.edge_sample_step);
     }
 
+    double RrtStarPlanner::averageInverseH(double x1, double y1, double x2, double y2) const
+    {
+        return computeAverageInverseH(*psf_generator_, x1, y1, x2, y2, params_.edge_sample_step);
+    }
+
+    double RrtStarPlanner::minH(double x1, double y1, double x2, double y2) const
+    {
+        return computeMinH(*psf_generator_, x1, y1, x2, y2, params_.edge_sample_step);
+    }
+
     double RrtStarPlanner::edgeCost(double x1, double y1, double x2, double y2) const
     {
         double L = distance(x1, y1, x2, y2);
-        if (!params_.enable_cbf) {
+        if (!params_.enable_cbf || psf_generator_ == nullptr) {
             return L;
         }
-        double h_bar = std::max(averageH(x1, y1, x2, y2), 1e-6);
-        return params_.safety_weight_c * L + (1.0 - params_.safety_weight_c) / h_bar;
+        // equation (6) is a path integral, so the safety term has to scale with L. without it
+        // the term is a flat per-edge penalty: the optimum then depends on how the path happens
+        // to be split into nodes, and skimming an obstacle costs the same over 5 cm as over 5 m
+        return L * (params_.safety_weight_c +
+                    (1.0 - params_.safety_weight_c) * averageInverseH(x1, y1, x2, y2));
     }
 
     bool RrtStarPlanner::isEdgeAdmissible(double x1, double y1, double x2, double y2, PlanningResult & metrics_out) const
@@ -86,14 +99,20 @@ namespace cbf_rrt_planner
         if (!collision_checker_.isEdgeFree(x1, y1, x2, y2)) {
             return false;
         }
-        if (!params_.enable_cbf) {
+        if (psf_generator_ == nullptr) {
+            return true;
+        }
+        // a zero-length edge carries no motion - counting it would dilute the rejection ratio
+        if (distance(x1, y1, x2, y2) < 1e-9) {
             return true;
         }
 
+        // the condition is always measured (the paper reports a rejection ratio for plain
+        // RRT* as well) but only enforced when enable_cbf is set
         metrics_out.cbf_candidates++;
         bool ok = passesCbfCondition(x1, y1, x2, y2);
         if (!ok) { metrics_out.cbf_rejections++; }
-        return ok;
+        return params_.enable_cbf ? ok : true;
     }
 
     std::pair<double, double> RrtStarPlanner::sampleRandomPoint(double goal_x, double goal_y)
@@ -144,6 +163,15 @@ namespace cbf_rrt_planner
     {
         PlanningResult result;
 
+        if (!collision_checker_.isPointFree(start_x, start_y)) {
+            result.failure = PlanningFailure::StartBlocked;
+            return result;
+        }
+        if (!collision_checker_.isPointFree(goal_x, goal_y)) {
+            result.failure = PlanningFailure::GoalBlocked;
+            return result;
+        }
+
         std::vector<TreeNode> tree;
         tree.push_back({start_x, start_y, 0.0, -1});
 
@@ -153,14 +181,21 @@ namespace cbf_rrt_planner
         children_.clear();
         children_.push_back({});
 
-        std::vector<int> goal_node_indices;
+        // a single goal node is kept and rewired to cheaper parents - appending a new one on
+        // every successful connection inflated both the tree and the CBF candidate counter
+        int goal_node_index = -1;
 
         for (int iter = 0; iter < params_.max_iterations; ++iter) {
+            result.iterations_used = iter + 1;
+
             auto [sx, sy] = sampleRandomPoint(goal_x, goal_y);
             int nearest_idx = findNearest(sx, sy);
             auto [nx, ny] = steer(tree[nearest_idx].x, tree[nearest_idx].y, sx, sy);
 
             if (!collision_checker_.isPointFree(nx, ny)) {continue;}
+
+            // steering can land exactly on the nearest node
+            if (distance(tree[nearest_idx].x, tree[nearest_idx].y, nx, ny) < 1e-9) {continue;}
 
             // neighborhood radius calculated based on the CURRENT tree size (before adding the new node) - decreases as the tree grows
             double neighbor_radius_now = currentNeighborRadius(tree.size());
@@ -203,35 +238,33 @@ namespace cbf_rrt_planner
                 }
             }
 
+            // 3. goal connection
             if (distance(nx, ny, goal_x, goal_y) <= params_.goal_tolerance) {
                 if (isEdgeAdmissible(nx, ny, goal_x, goal_y, result)) {
                     double goal_cost = tree[new_idx].cost_to_come + edgeCost(nx, ny, goal_x, goal_y);
-                    tree.push_back({goal_x, goal_y, goal_cost, new_idx});
-                    int goal_idx = static_cast<int>(tree.size()) - 1;
-                    children_.push_back({});
-                    addChild(new_idx, goal_idx);
-                    goal_node_indices.push_back(goal_idx);
+                    if (goal_node_index == -1) {
+                        tree.push_back({goal_x, goal_y, goal_cost, new_idx});
+                        goal_node_index = static_cast<int>(tree.size()) - 1;
+                        children_.push_back({});
+                        addChild(new_idx, goal_node_index);
+                        result.iterations_to_first_solution = iter + 1;
+                    } else if (goal_cost < tree[goal_node_index].cost_to_come) {
+                        // the existing goal cost is kept up to date by propagateCostUpdate,
+                        // so comparing against it is enough to keep the connection optimal
+                        removeChild(tree[goal_node_index].parent_index, goal_node_index);
+                        tree[goal_node_index].parent_index = new_idx;
+                        tree[goal_node_index].cost_to_come = goal_cost;
+                        addChild(new_idx, goal_node_index);
+                    }
                 }
             }
         }
 
-        result.iterations_used = params_.max_iterations;
-
-        int best_goal_idx = -1;
-        double min_final_cost = std::numeric_limits<double>::infinity();
-        for (int idx : goal_node_indices)
-        {
-            if (tree[idx].cost_to_come < min_final_cost)
-            {
-                min_final_cost = tree[idx].cost_to_come;
-                best_goal_idx = idx;
-            }
-        }
-
-        if (best_goal_idx != -1)
+        if (goal_node_index != -1)
         {
             result.success = true;
-            result.path = reconstructPath(tree, best_goal_idx);
+            result.failure = PlanningFailure::None;
+            result.path = reconstructPath(tree, goal_node_index);
 
             double total_len = 0.0;
             double weighted_h_sum = 0.0;
@@ -241,13 +274,17 @@ namespace cbf_rrt_planner
                 double x2 = result.path[i + 1].first, y2 = result.path[i + 1].second;
                 double seg_len = distance(x1, y1, x2, y2);
                 total_len += seg_len;
-                if (params_.enable_cbf && psf_generator_ != nullptr)
+                // measured for the baseline too - h_bar is a comparison column of the paper
+                if (psf_generator_ != nullptr)
                 {
                     weighted_h_sum += averageH(x1, y1, x2, y2) * seg_len;
+                    // the mean says nothing about the tightest point of the path, which is what
+                    // decides whether the robot skims an obstacle
+                    result.min_h = std::min(result.min_h, minH(x1, y1, x2, y2));
                 }
             }
             result.total_length = total_len;
-            if (params_.enable_cbf && total_len > 1e-9)
+            if (psf_generator_ != nullptr && total_len > 1e-9)
             {
                 result.mean_h = weighted_h_sum / total_len;
             }

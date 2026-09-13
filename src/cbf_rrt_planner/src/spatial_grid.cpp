@@ -52,6 +52,8 @@ namespace cbf_rrt_planner
 
     int SpatialGrid::queryNearest(double x, double y) const
     {
+        if (buckets_.empty()) {return -1;}
+
         int center_cx = cellCoord(x);
         int center_cy = cellCoord(y);
 

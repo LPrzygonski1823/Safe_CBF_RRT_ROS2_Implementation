@@ -123,6 +123,10 @@ controller_server:
 
     controller_frequency: 15.0
 
+    # RPP ramps its angular command relative to the measured velocity, so this has to point at
+    # a live topic - the Nav2 default "odom" has no publisher in this stack
+    odom_topic: odometry/filtered
+
     # if velocity is below threshold value it is set to 0
     min_x_velocity_threshold: 0.01    # Measured
     min_y_velocity_threshold: 0.01    # Measured
@@ -132,7 +136,8 @@ controller_server:
     progress_checker:
       plugin: nav2_controller::SimpleProgressChecker
       required_movement_radius: 0.5
-      movement_time_allowance: 10.0
+      # rotating in place produces no translation, so the allowance has to cover the initial turn
+      movement_time_allowance: 30.0
 
     goal_checker_plugin: goal_checker
     goal_checker:
@@ -147,14 +152,16 @@ controller_server:
 
       # Velocity/acceleration limits also have to be adjusted in the velocity smoother
       desired_linear_vel: 0.4
-      lookahead_dist: 0.2
+      # pure pursuit curvature is 2*y/L^2, so a short lookahead turns a small lateral error into
+      # a huge steering command. 0.6 is the Nav2 default
+      lookahead_dist: 0.6
       transform_tolerance: 0.5
 
       # Adaptive lookahead gain
       use_velocity_scaled_lookahead_dist: false # Currently doesn't work, uncomment in next release
       lookahead_time: 1.5
-      min_lookahead_dist: 0.1
-      max_lookahead_dist: 0.3
+      min_lookahead_dist: 0.3
+      max_lookahead_dist: 0.9
 
       # Approach to goal
       min_approach_linear_velocity: 0.2
@@ -179,13 +186,15 @@ controller_server:
 
       allow_reversing: false
       use_rotate_to_heading: true
-      rotate_to_heading_min_angle: 0.3
+      # below this heading error normal steering does the correcting instead of stopping to
+      # rotate in place. 0.785 is the Nav2 default
+      rotate_to_heading_min_angle: 0.785
 
-      # it is only used when rotating to heading (use_rotate_to_heading)
-      # for some reason rotate_to_heading_angular_vel is ignored and robot rotates with
-      # max_angular_accel/10. angular velocity (that's why it is set to higher value)
-      max_angular_accel: 7.0
-      rotate_to_heading_angular_vel: 2.5
+      # only used when rotating to heading (use_rotate_to_heading). RPP clamps the angular
+      # command to the measured velocity +/- max_angular_accel*dt, so both depend on odom_topic
+      # above being alive. matched to the velocity_smoother limits
+      max_angular_accel: 3.2
+      rotate_to_heading_angular_vel: 1.5
       use_interpolation: true
 
 controller_server_rclcpp_node:

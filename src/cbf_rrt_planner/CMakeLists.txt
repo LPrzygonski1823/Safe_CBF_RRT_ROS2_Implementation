@@ -11,6 +11,7 @@ find_package(Threads REQUIRED)
 find_package(std_srvs REQUIRED)
 find_package(nav2_msgs REQUIRED)
 find_package(rclcpp_action REQUIRED)
+find_package(action_msgs REQUIRED)
 
 add_executable(planner_node
   src/planner_node.cpp
@@ -31,13 +32,19 @@ target_include_directories(planner_node PUBLIC
 
 target_compile_features(planner_node PUBLIC cxx_std_17)
 
-ament_target_dependencies(planner_node rclcpp nav_msgs geometry_msgs tf2_ros tf2_geometry_msgs std_srvs nav2_msgs rclcpp_action)
+ament_target_dependencies(planner_node rclcpp nav_msgs geometry_msgs tf2_ros tf2_geometry_msgs std_srvs nav2_msgs rclcpp_action action_msgs)
 
 target_link_libraries(planner_node Threads::Threads)
 
 install(TARGETS
   planner_node
   DESTINATION lib/${PROJECT_NAME}
+)
+
+install(DIRECTORY
+  launch
+  config
+  DESTINATION share/${PROJECT_NAME}
 )
 
 ament_package()

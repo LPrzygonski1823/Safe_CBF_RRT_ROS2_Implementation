@@ -1,0 +1,27 @@
+planner_node:
+  ros__parameters:
+
+    # base RRT* parameters (algorithm 1 of the paper)
+    step_size: 1.0
+    max_iterations: 10000
+    goal_bias: 0.05
+    goal_tolerance: 1.0
+    neighbor_radius: 5.0
+    gamma: 5.0
+
+    # safe-CBF-RRT* parameters - enable_cbf: false gives the plain RRT* baseline,
+    # safety_weight_c is 'c' of equation (6): 1.0 = length only, 0.0 = safety only
+    enable_cbf: true
+    kappa: 5.0
+    safety_weight_c: 0.2
+    nominal_velocity: 1.0
+    occupied_threshold: 65
+    enable_smoothing: false
+
+    # ROS integration
+    path_frame_id: map
+    # Nav2 controllers need a dense path; keep this at roughly the local costmap resolution
+    path_pose_spacing: 0.05
+    odom_topic: /odometry/filtered
+    odom_timeout: 1.0
+    metrics_csv_path: /workspace/src/cbf_rrt_planner/maps/psf_debug/planning_metrics.csv

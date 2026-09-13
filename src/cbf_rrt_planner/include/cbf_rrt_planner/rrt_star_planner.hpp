@@ -44,6 +44,8 @@ namespace cbf_rrt_planner
 
             bool passesCbfCondition(double x1, double y1, double x2, double y2) const;
             double averageH(double x1, double y1, double x2, double y2) const;
+            double averageInverseH(double x1, double y1, double x2, double y2) const;
+            double minH(double x1, double y1, double x2, double y2) const;
             double edgeCost(double x1, double y1, double x2, double y2) const;
 
             bool isEdgeAdmissible(double x1, double y1, double x2, double y2, PlanningResult & metrics_out) const;

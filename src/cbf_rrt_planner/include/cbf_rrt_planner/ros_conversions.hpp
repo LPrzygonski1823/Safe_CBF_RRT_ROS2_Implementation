@@ -15,6 +15,16 @@ namespace cbf_rrt_planner
     OccupancyGridData toGridData(const nav_msgs::msg::OccupancyGrid & msg);
 
     // conversion of the planning result to ROS2
-    nav_msgs::msg::Path toPathMsg(const PlanningResult & result, const std::string & frame_id, const rclcpp::Time & stamp);
+    // every pose is oriented along its outgoing segment, and the last one takes the requested
+    // goal orientation - that is the yaw the Nav2 goal checker compares against
+    // segments are resampled to pose_spacing because Nav2 controllers assume a dense path:
+    // RPP discards plan poses farther than half the local costmap extent, so a raw RRT* path
+    // (whose rewired edges reach neighbor_radius) can leave it with nothing to follow
+    nav_msgs::msg::Path toPathMsg(
+        const PlanningResult & result,
+        const std::string & frame_id,
+        const rclcpp::Time & stamp,
+        const geometry_msgs::msg::Quaternion & goal_orientation,
+        double pose_spacing);
 
 }

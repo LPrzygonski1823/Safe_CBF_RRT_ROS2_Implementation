@@ -1,4 +1,5 @@
 #pragma once
+#include <limits>
 #include <vector>
 #include <utility>
 
@@ -48,14 +49,27 @@ namespace cbf_rrt_planner
         int occupied_threshold = 65;
     };
 
+    // reason why plan() returned no path - lets the caller tell an invalid query
+    // (start/goal in an occupied or unknown cell) from a genuine search failure
+    enum class PlanningFailure : int
+    {
+        None = 0,
+        StartBlocked = 1,
+        GoalBlocked = 2,
+        NoPathFound = 3
+    };
+
     // planner execution result ready to be published/exported to metrics
     struct PlanningResult
     {
         bool success = false;
+        PlanningFailure failure = PlanningFailure::NoPathFound;
         std::vector<std::pair<double, double>>  path; // from start to goal, inclusive
         double total_length = 0.0;
-        double mean_h = 0.0; // mean h along the entire path (only when enable_cbf is true)
-        int iterations_used = 0;
+        double mean_h = 0.0; // mean h along the entire path (whenever a PSF is available)
+        double min_h = std::numeric_limits<double>::infinity(); // tightest clearance on the path
+        int iterations_used = 0; // iterations actually executed by plan()
+        int iterations_to_first_solution = -1; // iteration that first reached the goal, (-1) if never - "Iterations" column of the paper
         int cbf_rejections  = 0; // number of edges rejected BY CBF
         int cbf_candidates  = 0; // number of edges that passed the collision test (candidates for CBF)
 

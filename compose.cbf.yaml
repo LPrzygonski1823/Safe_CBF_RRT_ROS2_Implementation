@@ -1,0 +1,21 @@
+# Overlay adding the Safe-CBF-RRT* planner to either stack:
+# simulation docker compose -f compose.simulation.yaml -f compose.cbf.yaml up
+# real robot docker compose -f compose.yaml -f compose.cbf.yaml up
+# Use the `just cbf-*` recipes
+
+services:
+
+  cbf-planner:
+    build:
+      context: .
+      dockerfile: dockerfile.dev
+    image: ros_dev_cbf:latest
+    depends_on:
+      - navigation
+    volumes:
+      - .:/workspace
+    working_dir: /workspace
+    environment:
+      # must match the Nav2 container: True in Gazebo (/clock), False on the physical robot
+      - USE_SIM_TIME=${USE_SIM_TIME:-True}
+    command: bash /workspace/scripts/cbf_planner_entrypoint.sh
