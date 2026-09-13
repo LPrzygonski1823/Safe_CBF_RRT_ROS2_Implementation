@@ -9,6 +9,8 @@ find_package(tf2_ros REQUIRED)
 find_package(tf2_geometry_msgs REQUIRED)
 find_package(Threads REQUIRED)
 find_package(std_srvs REQUIRED)
+find_package(nav2_msgs REQUIRED)
+find_package(rclcpp_action REQUIRED)
 
 add_executable(planner_node
   src/planner_node.cpp
@@ -29,7 +31,7 @@ target_include_directories(planner_node PUBLIC
 
 target_compile_features(planner_node PUBLIC cxx_std_17)
 
-ament_target_dependencies(planner_node rclcpp nav_msgs geometry_msgs tf2_ros tf2_geometry_msgs std_srvs)
+ament_target_dependencies(planner_node rclcpp nav_msgs geometry_msgs tf2_ros tf2_geometry_msgs std_srvs nav2_msgs rclcpp_action)
 
 target_link_libraries(planner_node Threads::Threads)
 

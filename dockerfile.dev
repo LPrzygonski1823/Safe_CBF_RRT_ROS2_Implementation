@@ -1,0 +1,14 @@
+FROM ros:humble
+
+RUN rm -f /etc/apt/sources.list.d/ros* \
+    && echo "deb [trusted=yes] http://packages.ros.org/ros2/ubuntu jammy main" > /etc/apt/sources.list.d/ros2.list
+
+RUN apt-get update && apt-get install -y \
+    ros-humble-nav2-msgs \
+    ros-humble-rclcpp-action \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN echo "source /opt/ros/humble/setup.bash" >> /root/.bashrc
+RUN echo "if [ -f /workspace/install/setup.bash ]; then source /workspace/install/setup.bash; fi" >> /root/.bashrc
+
+WORKDIR /workspace

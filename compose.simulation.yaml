@@ -15,7 +15,9 @@ x-cpu-config:
 services:
 
   rosbot:
-    image: ${SIMULATION_DOCKER_IMAGE:-husarion/rosbot-xl-gazebo:humble-0.9.1-20240131}
+    build:
+      context: .
+      dockerfile: dockerfile.rosbot
     <<: *gpu-config # or *cpu-config
     devices:
     - /dev/dri:/dev/dri

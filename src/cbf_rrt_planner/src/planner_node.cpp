@@ -5,9 +5,11 @@
 #include <optional>
 
 #include "rclcpp/rclcpp.hpp"
+#include "rclcpp_action/rclcpp_action.hpp"
 #include "nav_msgs/msg/occupancy_grid.hpp"
 #include "nav_msgs/msg/odometry.hpp"
 #include "nav_msgs/msg/path.hpp"
+#include "nav2_msgs/action/follow_path.hpp"
 #include "geometry_msgs/msg/pose_stamped.hpp"
 #include "geometry_msgs/msg/transform_stamped.hpp"
 #include "std_srvs/srv/trigger.hpp"
@@ -47,10 +49,12 @@ public:
     );
 
     goal_sub_ = this->create_subscription<geometry_msgs::msg::PoseStamped>(
-      "/goal_pose", 10, std::bind(&PlannerNode::goalCallback, this, std::placeholders::_1)
+      "/cbf_goal_pose", 10, std::bind(&PlannerNode::goalCallback, this, std::placeholders::_1)
     );
 
     path_pub_ = this->create_publisher<nav_msgs::msg::Path>("/planned_path", 10);
+
+    follow_path_client_ = rclcpp_action::create_client<FollowPath>(this, "follow_path");
 
     refresh_srv_ = this->create_service<std_srvs::srv::Trigger>(
       "/refresh_map",
@@ -85,16 +89,16 @@ private:
   // ROS2 params initialization
   void declareParameters()
   {
-    this->declare_parameter<double>("step_size", 2.0);
-    this->declare_parameter<int>("max_iterations", 2000);
+    this->declare_parameter<double>("step_size", 1.0);
+    this->declare_parameter<int>("max_iterations", 10000);
     this->declare_parameter<double>("goal_bias", 0.05);
     this->declare_parameter<double>("goal_tolerance", 1.0);
     this->declare_parameter<double>("neighbor_radius", 5.0);
     this->declare_parameter<double>("gamma", 5.0);
 
     this->declare_parameter<bool>("enable_cbf", true);
-    this->declare_parameter<double>("kappa", 20.0);
-    this->declare_parameter<double>("safety_weight_c", 1.0);
+    this->declare_parameter<double>("kappa", 5.0);
+    this->declare_parameter<double>("safety_weight_c", 0.2);
     this->declare_parameter<double>("nominal_velocity", 1.0);
     this->declare_parameter<int>("occupied_threshold", 65);
     this->declare_parameter<bool>("enable_smoothing", false);
@@ -150,26 +154,22 @@ private:
   // map: asynchronous psf
   void mapCallback(const nav_msgs::msg::OccupancyGrid::SharedPtr msg)
   {
-    bool first_time = !map_received_;
     current_grid_data_ = cbf_rrt_planner::toGridData(*msg);
-    map_received_ = true;
-
-    if (first_time) {
-      RCLCPP_INFO(
-        this->get_logger(),
-        "First map received: %d x %d (resolution %.3f m/cell).",
-        current_grid_data_.width, current_grid_data_.height, current_grid_data_.resolution);
-        
-      if (this->get_parameter("enable_cbf").as_bool()) {
-          RCLCPP_INFO(this->get_logger(), "Automatically triggering initial PSF generation...");
-          triggerPsfGenerationIfNeeded(this->get_parameter("occupied_threshold").as_int());
-      }
+    if (!map_received_) {
+      RCLCPP_INFO(this->get_logger(), "First map received. Awaiting /refresh_map to generate PSF.");
+      map_received_ = true;
     }
   }
 
   void triggerPsfGenerationIfNeeded(int occupied_threshold)
   {
     if (psf_generation_triggered_ || !map_received_) {return;}
+
+    frozen_origin_x_ = current_grid_data_.origin_x;
+    frozen_origin_y_ = current_grid_data_.origin_y;
+    frozen_width_ = current_grid_data_.width;
+    frozen_height_ = current_grid_data_.height;
+
     psf_generation_triggered_ = true;
     
     // safe: applied before async thread starts
@@ -256,6 +256,21 @@ private:
           "try sending the goal again in a moment.");
         return;
       }
+
+      double tolerance = current_grid_data_.resolution * 0.5;
+
+      if (current_grid_data_.width != frozen_width_ ||
+          current_grid_data_.height != frozen_height_ ||
+          std::abs(current_grid_data_.origin_x - frozen_origin_x_) > tolerance ||
+          std::abs(current_grid_data_.origin_y - frozen_origin_y_) > tolerance) {
+          
+          RCLCPP_WARN(
+            this->get_logger(),
+            "MAP MISMATCH DETECTED! Live map (origin: %.2f, %.2f, size: %dx%d) differs from frozen PSF map (origin: %.2f, %.2f, size: %dx%d). "
+            "CBF evaluations will be physically shifted and inaccurate! Please call /refresh_map.",
+            current_grid_data_.origin_x, current_grid_data_.origin_y, current_grid_data_.width, current_grid_data_.height,
+            frozen_origin_x_, frozen_origin_y_, frozen_width_, frozen_height_);
+      }
     }
 
     if (!has_odom_) {
@@ -312,12 +327,53 @@ private:
       }
     }
 
+    std::string csv_path = this->get_parameter("metrics_csv_path").as_string();
+    std::filesystem::create_directories(std::filesystem::path(csv_path).parent_path());
+    std::string label = params.enable_cbf ? ("cbf_c" + std::to_string(params.safety_weight_c)) : "baseline_rrt_star";
+    cbf_rrt_planner::PlanningMetricsLogger::appendResult(csv_path, label, result);
+
     auto path_msg = cbf_rrt_planner::toPathMsg(
       result, this->get_parameter("path_frame_id").as_string(), this->now());
     path_pub_->publish(path_msg);
-  }
 
+    if (!follow_path_client_->wait_for_action_server(2s)) {
+      RCLCPP_ERROR(this->get_logger(), "FollowPath action server not available - is controller_server running?");
+      return;
+    }
+
+    auto goal_msg = FollowPath::Goal();
+    goal_msg.path = path_msg;
+    goal_msg.controller_id = "FollowPath"; // nazwa pluginu zdefiniowana w nav2_rpp_params.yaml
+
+    rclcpp_action::Client<FollowPath>::SendGoalOptions send_goal_options;
+    send_goal_options.result_callback =
+        [this](const FollowPathGoalHandle::WrappedResult &result)
+    {
+      switch (result.code)
+      {
+      case rclcpp_action::ResultCode::SUCCEEDED:
+        RCLCPP_INFO(this->get_logger(), "FollowPath: robot reached the end of the path.");
+        break;
+      case rclcpp_action::ResultCode::ABORTED:
+        RCLCPP_ERROR(this->get_logger(), "FollowPath: aborted (obstacle? controller failure?).");
+        break;
+      case rclcpp_action::ResultCode::CANCELED:
+        RCLCPP_WARN(this->get_logger(), "FollowPath: canceled (new goal received?).");
+        break;
+      default:
+        break;
+      }
+    };
+
+    follow_path_client_->async_send_goal(goal_msg, send_goal_options);
+    RCLCPP_INFO(this->get_logger(), "Sent path to controller_server (FollowPath action).");
+  }
+  
   // subs/publishers
+  using FollowPath = nav2_msgs::action::FollowPath;
+  using FollowPathGoalHandle = rclcpp_action::ClientGoalHandle<FollowPath>;
+  
+  rclcpp_action::Client<FollowPath>::SharedPtr follow_path_client_;
   rclcpp::Subscription<nav_msgs::msg::OccupancyGrid>::SharedPtr map_sub_;
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr odom_sub_;
   rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr goal_sub_;
@@ -336,6 +392,11 @@ private:
   std::future<void> psf_future_;
   bool psf_generation_triggered_ = false;
   bool psf_ready_ = false;
+
+  double frozen_origin_x_ = 0.0;
+  double frozen_origin_y_ = 0.0;
+  int frozen_width_ = 0;
+  int frozen_height_ = 0;
 
   double current_x_ = 0.0;
   double current_y_ = 0.0;
