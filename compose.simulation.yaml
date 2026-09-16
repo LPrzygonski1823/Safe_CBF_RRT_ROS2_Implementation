@@ -23,7 +23,8 @@ services:
     - /dev/dri:/dev/dri
     volumes:
       - /tmp/.X11-unix:/tmp/.X11-unix:rw
-    command: ${SIMULATION_COMMAND:-ros2 launch rosbot_xl_gazebo simulation.launch.py mecanum:=${MECANUM:-True}}
+      - ./worlds/custom_world_3.sdf:/custom_world_3.sdf
+    command: ${SIMULATION_COMMAND:-ros2 launch rosbot_xl_gazebo simulation.launch.py mecanum:=${MECANUM:-True}} world:=/custom_world_3.sdf headless:=False
 
   navigation:
     image: husarion/navigation2:humble-1.1.12-20240123
