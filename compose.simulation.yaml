@@ -58,3 +58,9 @@ services:
   foxglove-ds:
     image: husarion/foxglove-bridge:humble-0.7.3-20240108
     command: ros2 launch foxglove_bridge foxglove_bridge_launch.xml port:=8765 capabilities:=[clientPublish,connectionGraph,assets]
+
+  # comment when SLAM=True
+  static-tf:
+    image: ros:humble
+    command: ros2 run tf2_ros static_transform_publisher 0 0 0 0 0 0 map odom
+    network_mode: service:rosbot

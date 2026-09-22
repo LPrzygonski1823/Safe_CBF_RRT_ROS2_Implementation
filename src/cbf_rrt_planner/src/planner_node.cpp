@@ -40,8 +40,10 @@ public:
     tf_buffer_ = std::make_unique<tf2_ros::Buffer>(this->get_clock());
     tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
 
-    map_sub_ = this->create_subscription<nav_msgs::msg::OccupancyGrid>(
-      "/map", 10, std::bind(&PlannerNode::mapCallback, this, std::placeholders::_1)
+    rclcpp::QoS map_qos(10);
+    map_qos.transient_local();
+
+    map_sub_ = this->create_subscription<nav_msgs::msg::OccupancyGrid>("/map", map_qos, std::bind(&PlannerNode::mapCallback, this, std::placeholders::_1)
     );
 
     odom_sub_ = this->create_subscription<nav_msgs::msg::Odometry>(

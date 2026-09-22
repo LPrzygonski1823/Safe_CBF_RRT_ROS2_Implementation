@@ -14,7 +14,7 @@ def load_grid(path: str) -> np.ndarray:
 
 
 def main():
-    directory = sys.argv[1] if len(sys.argv) > 1 else "/tmp/psf_debug"
+    directory = sys.argv[1] if len(sys.argv) > 1 else "src/cbf_rrt_planner/maps/psf_debug"
 
     h = load_grid(f"{directory}/h.csv")
     ux = load_grid(f"{directory}/u_x.csv")

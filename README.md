@@ -60,3 +60,4 @@ Run these from `just cbf-shell`, or prefix them with
 | `ros2 service call /refresh_map std_srvs/srv/Trigger` | Regenerate the PSF. |
 | `ros2 topic pub --once /cbf_goal_pose geometry_msgs/msg/PoseStamped '{header: {frame_id: map}, pose: {position: {x: 2.0, y: 0.0}, orientation: {w: 1.0}}}'` | Send a goal manually. |
 | `ros2 run tf2_tools view_frames` | Dump the TF tree to a PDF. |
+| `docker compose exec navigation bash -c "source /opt/ros/humble/setup.bash && ros2 run nav2_map_server map_saver_cli -f /maps/map --ros-args -p save_map_timeout:=15.0 -p use_sim_time:=true"` | Saving SLAM map |
