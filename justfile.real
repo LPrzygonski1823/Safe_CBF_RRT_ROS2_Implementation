@@ -1,0 +1,136 @@
+set dotenv-load
+
+# physical ROSbot XL stack plus the Safe-CBF-RRT* planner overlay
+# SLAM and USE_SIM_TIME are set by hand in .env (USE_SIM_TIME=False on the robot)
+compose_real := "docker compose -f compose.yaml -f compose.cbf.yaml"
+
+[private]
+default:
+    @just -f {{justfile()}} --list --unsorted
+
+# [laptop] copy the repo to the robot, without host build artifacts (they are x86-64)
+cbf-real-sync hostname password="husarion": _run-as-user
+    #!/bin/bash
+    set -e
+    sshpass -p "{{password}}" rsync -av --delete \
+        --exclude='.git/' --exclude='build/' --exclude='install/' --exclude='log/' \
+        --exclude='maps/' \
+        ./ husarion@{{hostname}}:/home/husarion/${PWD##*/}
+
+# pull the Husarion images and build the planner image
+cbf-real-pull: _run-as-user _check-real-env
+    #!/bin/bash
+    set -e
+    mkdir -m 775 -p maps
+    docker compose -f compose.yaml pull
+    {{compose_real}} build cbf-planner
+
+# build the planner on the robot; wipes artifacts built for another architecture
+cbf-real-build: _run-as-user _check-real-env
+    #!/bin/bash
+    set -e
+    {{compose_real}} run --rm --no-deps cbf-planner bash -c '\
+        if [ -d install ] && [ "$(cat install/.built_arch 2>/dev/null)" != "$(uname -m)" ]; then \
+            echo "install/ was built for another architecture - wiping build artifacts"; \
+            rm -rf build install log; \
+        fi && \
+        source /opt/ros/humble/setup.bash && \
+        colcon build --symlink-install --cmake-args -DCMAKE_BUILD_TYPE=Release && \
+        uname -m > install/.built_arch'
+
+# wipe build artifacts and build from scratch
+cbf-real-rebuild: _run-as-user _check-real-env
+    #!/bin/bash
+    set -e
+    {{compose_real}} run --rm --no-deps cbf-planner bash -c '\
+        rm -rf build install log && \
+        source /opt/ros/humble/setup.bash && \
+        colcon build --symlink-install --cmake-args -DCMAKE_BUILD_TYPE=Release && \
+        uname -m > install/.built_arch'
+
+# build, then start drivers, lidar, Nav2, Foxglove and the planner; follow planner logs
+cbf-real: cbf-real-build _run-as-user
+    #!/bin/bash
+    set -e
+    mkdir -m 775 -p maps
+    {{compose_real}} up -d
+    # a plain `up -d` leaves a running planner on the binary loaded before the build above
+    {{compose_real}} up -d --force-recreate --no-deps cbf-planner
+    {{compose_real}} logs -f cbf-planner
+
+# rebuild the planner and restart only its container
+cbf-real-restart: cbf-real-build _run-as-user
+    #!/bin/bash
+    set -e
+    {{compose_real}} up -d --force-recreate --no-deps cbf-planner
+    {{compose_real}} logs -f cbf-planner
+
+# freeze the current map and (re)generate the PSF
+cbf-real-refresh-map: _run-as-user
+    #!/bin/bash
+    {{compose_real}} exec cbf-planner bash -c "\
+        source /opt/ros/humble/setup.bash && source /workspace/install/setup.bash && \
+        ros2 service call /refresh_map std_srvs/srv/Trigger"
+
+# send a planning goal in the map frame, e.g. `just -f justfile.real cbf-real-goal 1.0 0.5`
+cbf-real-goal x y: _run-as-user
+    #!/bin/bash
+    {{compose_real}} exec cbf-planner bash -c "\
+        source /opt/ros/humble/setup.bash && source /workspace/install/setup.bash && \
+        ros2 topic pub --once /cbf_goal_pose geometry_msgs/msg/PoseStamped \
+        '{header: {frame_id: map}, pose: {position: {x: {{x}}, y: {{y}}, z: 0.0}, orientation: {w: 1.0} } }'"
+
+# stop the controller, so no more velocity commands reach the base
+cbf-real-stop-nav: _run-as-user
+    #!/bin/bash
+    {{compose_real}} stop navigation
+
+# save the current SLAM map to maps/map.pgm + maps/map.yaml
+cbf-real-save-map: _run-as-user
+    #!/bin/bash
+    {{compose_real}} exec navigation bash -c "\
+        source /opt/ros/humble/setup.bash && \
+        ros2 run nav2_map_server map_saver_cli -f /maps/map \
+        --ros-args -p save_map_timeout:=15.0 -p use_sim_time:=false"
+
+# check the inputs the planner depends on: lidar, odometry, sim time flag
+cbf-real-check: _run-as-user
+    #!/bin/bash
+    {{compose_real}} exec cbf-planner bash -c "\
+        source /opt/ros/humble/setup.bash && \
+        timeout 5 ros2 topic hz /scan_filtered; \
+        timeout 5 ros2 topic hz /odometry/filtered; \
+        ros2 param get /planner_node use_sim_time"
+
+# follow the planner logs
+cbf-real-logs: _run-as-user
+    #!/bin/bash
+    {{compose_real}} logs -f cbf-planner
+
+# interactive ROS 2 shell on the stack network
+cbf-real-shell: _run-as-user
+    #!/bin/bash
+    {{compose_real}} run --rm --no-deps cbf-planner bash
+
+# stop the whole stack
+cbf-real-down: _run-as-user
+    #!/bin/bash
+    {{compose_real}} down
+
+# the planner container defaults to simulated time, which has no /clock on the robot
+[private]
+_check-real-env:
+    #!/bin/bash
+    if [ "${USE_SIM_TIME:-True}" != "False" ]; then
+        echo -e "\e[1;33mUSE_SIM_TIME is '${USE_SIM_TIME:-True (default)}' - set USE_SIM_TIME=False in .env for the physical robot\e[0m"
+        exit 1
+    fi
+    echo "SLAM=${SLAM:-True}, USE_SIM_TIME=${USE_SIM_TIME}, CONTROLLER=${CONTROLLER:-rpp}"
+
+[private]
+_run-as-user:
+    #!/bin/bash
+    if [ "$EUID" -eq 0 ]; then
+        echo -e "\e[1;33mPlease re-run as non-root user\e[0m"
+        exit 1
+    fi
