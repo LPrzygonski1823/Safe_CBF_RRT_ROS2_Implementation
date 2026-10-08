@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <chrono>
 #include <filesystem>
 #include <future>
@@ -23,6 +24,7 @@
 #include "tf2_ros/transform_listener.h"
 
 #include "cbf_rrt_planner/collision_checker.hpp"
+#include "cbf_rrt_planner/map_inflation.hpp"
 #include "cbf_rrt_planner/planning_metrics.hpp"
 #include "cbf_rrt_planner/psf_generator.hpp"
 #include "cbf_rrt_planner/ros_conversions.hpp"
@@ -120,6 +122,12 @@ private:
     this->declare_parameter<int>("occupied_threshold", 65);
     this->declare_parameter<bool>("enable_smoothing", false);
 
+    this->declare_parameter<bool>("inflation", true);
+    this->declare_parameter<double>("inflation_robot_size", 0.22); // inflation radius [m]
+
+    this->declare_parameter<std::string>("psf_source", "centroid"); // "centroid" or "constant"
+    this->declare_parameter<double>("psf_boundary_flux", 1.0); // mean |dh/dn| on walls, "constant" only
+
     this->declare_parameter<std::string>("metrics_csv_path", "/workspace/src/cbf_rrt_planner/maps/psf_debug/planning_metrics.csv");
     this->declare_parameter<std::string>("path_frame_id", "map");
     this->declare_parameter<double>("path_pose_spacing", 0.05); // resampling of the published path
@@ -145,6 +153,23 @@ private:
     params.occupied_threshold =
       static_cast<int>(this->get_parameter("occupied_threshold").as_int());
     return params;
+  }
+
+  std::string psfSourceParam() const
+  {
+    std::string source = this->get_parameter("psf_source").as_string();
+    if (source != "centroid" && source != "constant") {
+      RCLCPP_WARN(
+        this->get_logger(), "Unknown psf_source '%s' - using 'centroid'.", source.c_str());
+      return "centroid";
+    }
+    return source;
+  }
+
+  double inflationRadiusParam() const
+  {
+    if (!this->get_parameter("inflation").as_bool()) {return 0.0;}
+    return std::max(0.0, this->get_parameter("inflation_robot_size").as_double());
   }
 
   // tf: function used by odomCallback and goalCallback
@@ -195,12 +220,24 @@ private:
     
     // safe: applied before async thread starts
     psf_generator_.setOccupiedThreshold(occupied_threshold);
+    frozen_psf_source_ = psfSourceParam();
+    frozen_psf_boundary_flux_ = this->get_parameter("psf_boundary_flux").as_double();
+    psf_generator_.setSource(
+      frozen_psf_source_ == "constant" ?
+      cbf_rrt_planner::PsfSource::Constant : cbf_rrt_planner::PsfSource::Centroid,
+      frozen_psf_boundary_flux_);
 
-    auto grid_data_snapshot = current_grid_data_;
+    // inflation has to precede segmentation: h must vanish on the inflated boundary, otherwise
+    // the CBF condition and the 1/h cost describe a point robot, not the robot body
+    frozen_inflation_radius_ = inflationRadiusParam();
+    auto grid_data_snapshot = cbf_rrt_planner::inflateObstacles(
+      current_grid_data_, frozen_inflation_radius_, occupied_threshold);
     RCLCPP_INFO(
       this->get_logger(),
-      "Freezing map at %d x %d and starting PSF generation (one-time, asynchronous)...",
-      grid_data_snapshot.width, grid_data_snapshot.height);
+      "Freezing map at %d x %d (obstacle inflation %.2f m, PSF source '%s') and starting PSF "
+      "generation (one-time, asynchronous)...",
+      grid_data_snapshot.width, grid_data_snapshot.height, frozen_inflation_radius_,
+      frozen_psf_source_.c_str());
 
     psf_future_ = std::async(
       std::launch::async,
@@ -221,9 +258,15 @@ private:
         std::string debug_dir = "/workspace/src/cbf_rrt_planner/maps/psf_debug";
         std::filesystem::create_directories(debug_dir);
         psf_generator_.exportToCsv(debug_dir);
-        RCLCPP_INFO(
-          this->get_logger(), "PSF ready (%zu obstacles). Exported.",
-          psf_generator_.obstacleCount());
+        if (psf_generator_.source() == cbf_rrt_planner::PsfSource::Constant) {
+          RCLCPP_INFO(
+            this->get_logger(), "PSF ready (%zu obstacles, constant source f0 = %.4f 1/m). Exported.",
+            psf_generator_.obstacleCount(), psf_generator_.constantSource());
+        } else {
+          RCLCPP_INFO(
+            this->get_logger(), "PSF ready (%zu obstacles, centroid source). Exported.",
+            psf_generator_.obstacleCount());
+        }
       } catch (const std::exception & e) {
         // the future is consumed at this point, so without clearing the trigger flag the node
         // would stay stuck reporting "generation in progress" forever
@@ -327,7 +370,28 @@ private:
       return;
     }
 
-    cbf_rrt_planner::CollisionChecker checker(current_grid_data_, params.occupied_threshold);
+    // the geometric check must see the same obstacles as the frozen PSF
+    double inflation_radius = psf_ready_ ? frozen_inflation_radius_ : inflationRadiusParam();
+    if (psf_ready_ && std::abs(inflationRadiusParam() - frozen_inflation_radius_) > 1e-9) {
+      RCLCPP_WARN(
+        this->get_logger(),
+        "Inflation parameters changed since the PSF was generated (frozen: %.2f m, requested: %.2f m) "
+        "- still planning with %.2f m. Call /refresh_map to apply the new value.",
+        frozen_inflation_radius_, inflationRadiusParam(), frozen_inflation_radius_);
+    }
+    if (psf_ready_ &&
+        (psfSourceParam() != frozen_psf_source_ ||
+         this->get_parameter("psf_boundary_flux").as_double() != frozen_psf_boundary_flux_)) {
+      RCLCPP_WARN(
+        this->get_logger(),
+        "PSF source parameters changed since the PSF was generated (frozen: '%s') - still planning "
+        "with the frozen PSF. Call /refresh_map to apply the new values.",
+        frozen_psf_source_.c_str());
+    }
+    auto planning_grid = cbf_rrt_planner::inflateObstacles(
+      current_grid_data_, inflation_radius, params.occupied_threshold);
+
+    cbf_rrt_planner::CollisionChecker checker(planning_grid, params.occupied_threshold);
     const cbf_rrt_planner::PSFGenerator * psf_ptr = psf_ready_ ? &psf_generator_ : nullptr;
 
     cbf_rrt_planner::RrtStarPlanner planner(checker, psf_ptr, params);
@@ -341,18 +405,35 @@ private:
       goal_in_map->pose.position.x, goal_in_map->pose.position.y);
 
     if (!result.success) {
+      cbf_rrt_planner::CollisionChecker raw_checker(current_grid_data_, params.occupied_threshold);
       switch (result.failure) {
         case cbf_rrt_planner::PlanningFailure::StartBlocked:
-          RCLCPP_WARN(
-            this->get_logger(),
-            "Planning REJECTED: start (%.2f, %.2f) falls into an occupied or unknown cell.",
-            current_x_, current_y_);
+          if (raw_checker.isPointFree(current_x_, current_y_)) {
+            RCLCPP_WARN(
+              this->get_logger(),
+              "Planning REJECTED: start (%.2f, %.2f) is closer than %.2f m to an obstacle "
+              "(inflated zone). Move the robot away or reduce inflation_robot_size.",
+              current_x_, current_y_, inflation_radius);
+          } else {
+            RCLCPP_WARN(
+              this->get_logger(),
+              "Planning REJECTED: start (%.2f, %.2f) falls into an occupied or unknown cell.",
+              current_x_, current_y_);
+          }
           break;
         case cbf_rrt_planner::PlanningFailure::GoalBlocked:
-          RCLCPP_WARN(
-            this->get_logger(),
-            "Planning REJECTED: goal (%.2f, %.2f) falls into an occupied or unknown cell.",
-            goal_in_map->pose.position.x, goal_in_map->pose.position.y);
+          if (raw_checker.isPointFree(goal_in_map->pose.position.x, goal_in_map->pose.position.y)) {
+            RCLCPP_WARN(
+              this->get_logger(),
+              "Planning REJECTED: goal (%.2f, %.2f) is closer than %.2f m to an obstacle "
+              "(inflated zone) - the robot body would not fit there.",
+              goal_in_map->pose.position.x, goal_in_map->pose.position.y, inflation_radius);
+          } else {
+            RCLCPP_WARN(
+              this->get_logger(),
+              "Planning REJECTED: goal (%.2f, %.2f) falls into an occupied or unknown cell.",
+              goal_in_map->pose.position.x, goal_in_map->pose.position.y);
+          }
           break;
         default:
           RCLCPP_WARN(
@@ -397,6 +478,8 @@ private:
     std::string csv_path = this->get_parameter("metrics_csv_path").as_string();
     std::filesystem::create_directories(std::filesystem::path(csv_path).parent_path());
     std::string label = params.enable_cbf ? ("cbf_c" + std::to_string(params.safety_weight_c)) : "baseline_rrt_star";
+    if (inflation_radius > 0.0) {label += "_infl" + std::to_string(inflation_radius);}
+    if (psf_ready_) {label += "_psf-" + frozen_psf_source_;}
     cbf_rrt_planner::PlanningMetricsLogger::appendResult(csv_path, label, result);
 
     auto path_msg = cbf_rrt_planner::toPathMsg(
@@ -514,6 +597,9 @@ private:
   double frozen_origin_y_ = 0.0;
   int frozen_width_ = 0;
   int frozen_height_ = 0;
+  double frozen_inflation_radius_ = 0.0;
+  std::string frozen_psf_source_ = "centroid";
+  double frozen_psf_boundary_flux_ = 1.0;
 
   double current_x_ = 0.0;
   double current_y_ = 0.0;

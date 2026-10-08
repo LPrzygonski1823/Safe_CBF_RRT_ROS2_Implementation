@@ -18,6 +18,22 @@ planner_node:
     occupied_threshold: 65
     enable_smoothing: false
 
+    # obstacles are dilated by this radius [m] before the PSF is generated, so h = 0 on the
+    # boundary of the robot's configuration space. the radius is the full centre-to-corner
+    # distance: 0.22 ~ circumscribed radius of the ROSbot XL (0.33 x 0.28 m -> 0.216 m), safe for
+    # any heading. read when the map is frozen (/refresh_map)
+    inflation: true
+    inflation_robot_size: 0.22
+
+    # source term of the Poisson equation for h, read when the map is frozen (/refresh_map):
+    #   centroid - -||grad u||_F with u = p - c_i on obstacle boundaries (paper, equations 4-5), h in m^2
+    #   constant - -f0 everywhere, f0 = psf_boundary_flux * perimeter / area (Bahati et al. 2025,
+    #              average flux), h in m and h ~ psf_boundary_flux * distance next to walls
+    # the scale of h differs between the two, so safety_weight_c and the mean_h / min_h metrics
+    # are not comparable across sources - tune c separately for each
+    psf_source: constant
+    psf_boundary_flux: 1.0
+
     # ROS integration
     path_frame_id: map
     # Nav2 controllers need a dense path; keep this at roughly the local costmap resolution

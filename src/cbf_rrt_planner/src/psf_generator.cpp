@@ -14,15 +14,48 @@ namespace cbf_rrt_planner
 
     void PSFGenerator::generate(const OccupancyGridData & map)
     {
+        ready_ = false;
+
         // A1, A2
         seg_result_ = segmentation_.segment(map);
 
-        // A3
-        u_field_ = solver_.solveLaplaceVector(seg_result_, /*boundary_scale=*/ 1.0);
+        if (source_ == PsfSource::Centroid) {
+            constant_source_ = 0.0;
 
-        // A4
-        Grid2D jacobian_norm = solver_.computeJacobianFrobeniusNorm(u_field_, seg_result_.resolution);
-        h_field_ = solver_.solvePoissonScalar(seg_result_, jacobian_norm);
+            // A3
+            u_field_ = solver_.solveLaplaceVector(seg_result_, /*boundary_scale=*/ 1.0);
+
+            // A4
+            Grid2D jacobian_norm = solver_.computeJacobianFrobeniusNorm(u_field_, seg_result_.resolution);
+            h_field_ = solver_.solvePoissonScalar(seg_result_, jacobian_norm);
+        } else {
+            // divergence theorem: f0 * area = |b| * perimeter, so the mean outward slope of h on
+            // the whole Dirichlet boundary (obstacles and map edge) equals boundary_flux_
+            const int H = seg_result_.height;
+            const int W = seg_result_.width;
+            long free_cells = 0;
+            long boundary_faces = 0;
+            const int dr[4] = {-1, 1, 0, 0};
+            const int dc[4] = {0, 0, -1, 1};
+            for (int r = 0; r < H; ++r) {
+                for (int c = 0; c < W; ++c) {
+                    if (static_cast<CellType>(seg_result_.cell_type(r, c)) != CellType::Free) {continue;}
+                    ++free_cells;
+                    for (int k = 0; k < 4; ++k) {
+                        auto nb = static_cast<CellType>(seg_result_.cell_type(r + dr[k], c + dc[k]));
+                        if (nb != CellType::Free) {++boundary_faces;}
+                    }
+                }
+            }
+            if (free_cells == 0) {throw std::runtime_error("PSFGenerator: map has no free cells");}
+
+            const double res = seg_result_.resolution;
+            constant_source_ = std::abs(boundary_flux_) * (boundary_faces * res) / (free_cells * res * res);
+
+            u_field_.x = Grid2D(H, W, 0.0);
+            u_field_.y = Grid2D(H, W, 0.0);
+            h_field_ = solver_.solvePoissonScalar(seg_result_, Grid2D(H, W, constant_source_));
+        }
 
         // A5
         solver_.computeGradient(h_field_, seg_result_.resolution, dh_dx_field_, dh_dy_field_);

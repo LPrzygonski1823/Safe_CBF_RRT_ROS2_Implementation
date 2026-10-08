@@ -243,6 +243,17 @@ just cbf-goal -6.98 -3.38
 - For the baseline set `enable_cbf: false` (`ros2 param set /planner_node enable_cbf false`). The
   CBF condition is still measured, so `mean_h` and `rejection_ratio` remain comparable columns.
   The PSF must already be generated for these columns to be filled.
+- To switch the PSF source, set it and re-freeze the map; the new source applies only after
+  `PSF ready`:
+
+  ```bash
+  docker exec rosbot-xl-autonomy-foxglove-cbf-planner-1 bash -c \
+    'source /opt/ros/humble/setup.bash && ros2 param set /planner_node psf_source constant'
+  just cbf-refresh-map
+  ```
+
+  `safety_weight_c` weights safety differently for each source, so sweep `c` separately for
+  `centroid` and `constant` (see `README.md` §6).
 - The start is always the robot's **current** position. To repeat a start/goal pair, drive the
   robot back (Teleop) or restart the stack (the robot respawns at the same point).
 - Results are appended to `src/cbf_rrt_planner/maps/psf_debug/planning_metrics.csv`. Column
@@ -269,6 +280,11 @@ Common situations:
 
 - **`Planning REJECTED: goal falls into an occupied or unknown cell`**: the goal is outside the
   frozen map's free space. Legitimate; pick a reachable point.
+- **`Planning REJECTED: ... (inflated zone)`**: the start or goal is free, but closer to an
+  obstacle than `inflation_robot_size` (0.22 m). Pick a point further from the wall, or lower the
+  radius and call `just cbf-refresh-map`.
+- **`Inflation parameters changed since the PSF was generated`**: the inflation was changed with
+  `ros2 param set`. It only takes effect after `just cbf-refresh-map`.
 - **`MAP MISMATCH DETECTED`**: the live map no longer matches the frozen one (only possible with
   `SLAM=True`). Call `just cbf-refresh-map`.
 - **`PSF generation in progress`**: the first goal triggers PSF generation lazily and does not

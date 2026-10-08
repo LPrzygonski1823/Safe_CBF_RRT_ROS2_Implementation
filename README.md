@@ -103,7 +103,11 @@ with `odom → base_link` (EKF). The planner transforms odometry and goals into 
 
 ### 3.1 PSF pipeline (runs in `std::async`)
 
-`PSFGenerator::generate()` executes four stages on a frozen copy of the map:
+`PSFGenerator::generate()` executes four stages on a frozen copy of the map. Before that, the
+node dilates every occupied or unknown cell by `inflation_robot_size` (`inflateObstacles`, disc
+of cell centres), so the PSF is built on the robot's configuration space: `h = 0` where the robot
+**body** would touch an obstacle, not where its centre would. The geometric collision check uses
+the same inflated map.
 
 1. **`ObstacleSegmentation`**: thresholds cells at `occupied_threshold` (unknown cells count as
    occupied), finds connected components (4-connectivity), and classifies every cell as `Free`,
@@ -121,6 +125,16 @@ with `odom → base_link` (EKF). The planner transforms odometry and goals into 
 4. **`solvePoissonScalar`**: solves the Poisson equation `∇²h = −‖∇u‖` for `h`, with `h = 0` on
    both obstacle and domain boundaries. Then `computeGradient` gives `∇h` (central differences).
 
+**Alternative source (`psf_source: constant`).** Stages 2 and 3 are skipped and the Poisson
+equation gets a constant source, `∇²h = −f0`, with `h = 0` on all boundaries. `f0` follows the
+average flux method of Bahati et al. (RSS 2025): by the divergence theorem,
+`f0 = psf_boundary_flux · perimeter / area` of the free space, so the mean slope of `h` on the
+walls equals `psf_boundary_flux` and next to a wall `h ≈ psf_boundary_flux · distance` [m].
+`h` then depends only on the shape of the free space, not on how segmentation split it into
+obstacles or where their centroids fall. It is also what the author's MATLAB reference
+effectively computes: its obstacle boundary condition is overwritten by a constant, so `u` is
+constant and the source `‖u‖` is constant too. It needs one SOR solve instead of three.
+
 `getH()` / `getGradientH()` bilinearly interpolate these grids, so the planner can query `h` at
 arbitrary continuous coordinates. `exportToCsv()` dumps `h.csv`, `u_x.csv`, `u_y.csv` to
 `src/cbf_rrt_planner/maps/psf_debug/` for `tools/visualize_psf.py`.
@@ -131,8 +145,10 @@ triggered either by the `/refresh_map` service or, once, lazily by the first goa
 polls the background task. Each goal compares the live map's origin and size with the frozen
 ones and warns `MAP MISMATCH DETECTED` if they differ.
 
-`h` is in m² (`u` is in metres, `∇u` is dimensionless), so it is not a distance. Its value
-depends on the size and centroid placement of nearby obstacles, not only on clearance.
+With the centroid source, `h` is in m² (`u` is in metres, `∇u` is dimensionless), so it is not
+a distance; its value depends on the size and centroid placement of nearby obstacles, not only
+on clearance. With the constant source, `h` is in metres and approximates the distance only
+next to walls; in open areas it grows with the square of the local width.
 
 ### 3.2 RRT\* search
 
@@ -142,8 +158,8 @@ depends on the size and centroid placement of nearby obstacles, not only on clea
 - **Nearest / neighbours**: `SpatialGrid` spatial hashing, ~O(1) per query instead of O(n).
 - **Neighbour radius**: `r_n = gamma · sqrt(log n / n)`, clamped to `[step_size, neighbor_radius]`.
   The shrinking radius is what preserves asymptotic optimality.
-- **Edge admissibility** (`isEdgeAdmissible`): geometric collision test (point robot, samples
-  every half cell), then the CBF condition of equation (3) sampled every `edge_sample_step` along
+- **Edge admissibility** (`isEdgeAdmissible`): geometric collision test (robot centre on the
+  inflated map, samples every half cell), then the CBF condition of equation (3) sampled every `edge_sample_step` along
   the edge: `∇h · v ≥ −κ·h`, with `v` the unit edge direction times `nominal_velocity`. Only the
   ratio `nominal_velocity / kappa` matters: it is the approach margin in metres (0.2 m with the
   defaults). The condition is always *measured* (so the baseline also reports a rejection ratio)
@@ -219,6 +235,10 @@ reports distance-to-goal and speed from the action feedback.
 | `nominal_velocity` | 1.0 | Assumed speed along an edge when evaluating the CBF condition. Not sent to the controller (RPP drives at 0.4 m/s). |
 | `occupied_threshold` | 65 | Occupancy value treated as obstacle (0–100); unknown counts as occupied. |
 | `enable_smoothing` | false | Greedy shortcutting after the search. |
+| `psf_source` | constant | Source term of the Poisson equation: `centroid` (paper, equations 4–5) or `constant` (average flux, Bahati et al.). |
+| `psf_boundary_flux` | 1.0 | `constant` only: mean slope of `h` on the walls; `h ≈ psf_boundary_flux · distance` next to them. |
+| `inflation` | false | Dilate obstacles before the PSF is generated. `false` = point robot, as in the paper. |
+| `inflation_robot_size` | 0.22 | Inflation radius [m]: distance from the robot centre to its farthest point. 0.22 ≈ circumscribed radius of the ROSbot XL (0.216 m, safe for any heading); 0.14 = inscribed radius. On the physical robot add a margin for map discretisation, localisation and tracking error (e.g. 0.25–0.27). |
 | `path_frame_id` | map | Frame of the published path. |
 | `path_pose_spacing` | 0.05 | Resampling step. Keep ≈ local costmap resolution; larger breaks RPP. |
 | `odom_topic` | /odometry/filtered | Source of the planning start pose. |
@@ -232,6 +252,9 @@ reports distance-to-goal and speed from the action feedback.
 - All parameters except `odom_topic` (read once at start-up) are re-read **on every goal**, so
   `ros2 param set /planner_node <name> <value>` takes effect immediately without a restart. This
   is the fastest way to sweep `safety_weight_c`.
+- Exception: `inflation`, `inflation_robot_size`, `psf_source` and `psf_boundary_flux` are
+  applied when the map is frozen, because the PSF depends on them. After changing them call `/refresh_map`; until then the node keeps the
+  frozen radius (for the collision check too) and warns on every goal.
 - `config/` and `launch/` are **symlinked** into `install/` (`colcon build --symlink-install`).
   Editing the YAML or the launch file needs only a planner container restart, not a rebuild.
   Editing C++ needs a rebuild.
@@ -286,7 +309,7 @@ Each plan appends one line to `planning_metrics.csv`:
 
 | Column | Meaning |
 |---|---|
-| `run_label` | `cbf_c<value>` or `baseline_rrt_star` |
+| `run_label` | `cbf_c<value>` or `baseline_rrt_star`, with `_infl<radius>` appended when inflation is on and `_psf-centroid` / `_psf-constant` when a PSF is available |
 | `success` | 1 if a path was found |
 | `length` | path length [m] |
 | `mean_h` | length-weighted mean of `h` along the path |
@@ -301,10 +324,17 @@ Read them carefully:
   `iterations_to_first_solution`.
 - `mean_h` is length-weighted; `min_h` is the tightest point on the path. **Both are needed**: a
   high mean can still hide a near-obstacle dip.
-- `h` is a Poisson function value in m², not metres. Compare between runs on the same frozen PSF
-  rather than converting to distance or comparing across maps.
-- The label does not include `kappa` or `nominal_velocity`: note those values yourself when you
-  change them.
+- `h` is a Poisson function value (m² for the centroid source, m for the constant source), not
+  a distance. Compare between runs on the same frozen PSF rather than converting to distance or
+  comparing across maps.
+- **The PSF source changes the meaning of `c` and of the `h` metrics.** The cost contains `1/h`,
+  and the two sources give `h` of different scale and spatial distribution (on the bundled map,
+  inflated by 0.22 m: `h` = 2.24 vs 0.58 at the goal `(-6.98, -3.38)`, 0.62 vs 0.51 at the start).
+  The same `safety_weight_c` therefore weights safety differently, and `mean_h` / `min_h` cannot
+  be compared between `_psf-centroid` and `_psf-constant` runs. Sweep `c` separately for each
+  source and compare the sources by `length` and by geometric clearance, not by `h`.
+- The label includes the inflation radius but not `kappa` or `nominal_velocity`: note those
+  values yourself when you change them.
 - Measured effect of `c` on one corridor in simulation (3.81 m straight-line): `c=0.2` → length
   7.34, `mean_h` 2.51, `min_h` 1.18; `c=0.9` → length 6.12, `mean_h` 1.57, `min_h` 0.35.
 
@@ -324,6 +354,7 @@ src/cbf_rrt_planner/
     poisson_solver.hpp        SOR solver: Laplace(u), Jacobian norm, Poisson(h), gradient
     psf_generator.hpp         public PSF facade: generate / getH / getGradientH / exportToCsv
     collision_checker.hpp     geometric point/edge tests + workspace bounds for sampling
+    map_inflation.hpp         obstacle dilation by the robot radius (configuration space)
     spatial_grid.hpp          spatial hashing for nearest / radius queries
     rrt_star_types.hpp        PlannerParams, PlanningResult, TreeNode, PlanningFailure
     rrt_star_planner.hpp      the planner itself
@@ -360,14 +391,20 @@ SIM_GUIDE.md, REAL_GUIDE.md   step-by-step guides
 
 - The PSF is computed once on a frozen map. Dynamic obstacles are not represented; the CBF term
   only reflects the static map at freeze time.
-- `h` depends on obstacle size and centroid placement, not only on clearance. For non-convex
-  obstacles (U shapes, rooms, the outer wall) the centroid lies in free space, and concave
-  pockets get a comparatively high `h`.
+- With `psf_source: centroid`, `h` depends on obstacle size and centroid placement, not only on
+  clearance. For non-convex obstacles (U shapes, rooms, the outer wall) the centroid lies in free
+  space, and concave pockets get a comparatively high `h`. `psf_source: constant` avoids this,
+  but gives very high `h` in large open areas (it grows with the square of the local width), so
+  the `1/h` cost pulls paths towards their middle.
+- The CSV has no geometric clearance column, so comparing PSF sources currently relies on
+  `length` and on external measurements.
 - The CBF condition restricts the **approach direction**, not clearance: motion parallel to a wall
   always passes. Goals closer to a wall than `nominal_velocity / kappa` can only be reached
   almost parallel to it.
-- The planner treats the robot as a point. The footprint (0.33 × 0.29 m) is not used and
-  obstacles are not inflated.
+- The robot body is approximated by a disc of radius `inflation_robot_size`. The default 0.22 m
+  (circumscribed radius) is conservative for the rectangular 0.33 × 0.28 m footprint, and
+  narrows passages by 0.44 m. A robot parked closer to a wall than this radius cannot start
+  planning (`Planning REJECTED: start ... (inflated zone)`).
 - Every plan spends the full iteration budget, so there is no continuous replanning. Closed-loop
   replanning would need a time budget or a convergence criterion.
 - The RRT\* random generator is seeded from `std::random_device`: runs are not repeatable with

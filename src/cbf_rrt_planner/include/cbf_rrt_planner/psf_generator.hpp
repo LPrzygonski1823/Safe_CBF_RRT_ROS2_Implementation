@@ -7,6 +7,13 @@
 namespace cbf_rrt_planner
 {
 
+    // source term of the Poisson equation for h
+    enum class PsfSource
+    {
+        Centroid,   // -||grad u||_F, u = p - c_i on obstacle boundaries (equations 4-5 of the paper)
+        Constant    // -f0 everywhere, f0 = |b| * perimeter / area (average flux method, Bahati et al. 2025)
+    };
+
     // public interface of PSF
     // PlannerNode and RRT*
     class PSFGenerator
@@ -37,7 +44,22 @@ namespace cbf_rrt_planner
             segmentation_ = ObstacleSegmentation(threshold, true); 
         }
 
+        // boundary_flux: desired mean |dh/dn| on the boundary, only used by PsfSource::Constant
+        void setSource(PsfSource source, double boundary_flux) {
+            source_ = source;
+            boundary_flux_ = boundary_flux;
+        }
+
+        PsfSource source() const {return source_;}
+
+        // f0 of the last Constant run, 0 for Centroid
+        double constantSource() const {return constant_source_;}
+
     private:
+        PsfSource source_ = PsfSource::Centroid;
+        double boundary_flux_ = 1.0;
+        double constant_source_ = 0.0;
+
         ObstacleSegmentation segmentation_;
         PoissonSolver solver_;
 

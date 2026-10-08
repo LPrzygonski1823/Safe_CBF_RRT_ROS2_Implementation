@@ -290,8 +290,9 @@ Ctrl-C in a terminal **does not stop the robot**. In order of reliability:
 
 ### 6.2 Nothing in the chain avoids unmapped obstacles
 
-- The planner treats the robot as a **point**. The footprint (0.33 × 0.29 m) is not used and
-  obstacles are not inflated.
+- The planner inflates the **frozen map** by `inflation_robot_size` (0.22 m by default), so the
+  robot body is covered only for obstacles present when the map was frozen. Check that
+  `inflation: true` before experiments meant to be safe for the body.
 - The PSF is **frozen** at the moment of `/refresh_map`. People, moved furniture and anything
   else not in the frozen map are invisible to the planner.
 - RPP has `use_collision_detection: false`, so the controller does not stop for obstacles in the
@@ -376,7 +377,14 @@ ros2 param set /planner_node kappa 5.0
 ros2 param set /planner_node nominal_velocity 0.4
 
 ros2 param get /planner_node safety_weight_c
+
+# PSF source and inflation are frozen with the map: run cbf-real-refresh-map afterwards
+ros2 param set /planner_node psf_source constant      # or: centroid
+ros2 param set /planner_node inflation_robot_size 0.26
 ```
+
+`safety_weight_c` weights safety differently for each PSF source, so sweep `c` separately for
+`centroid` and `constant` (see `README.md` §6).
 
 The values apply from the next goal. They are lost when the planner container is recreated. To
 make them permanent, edit `src/cbf_rrt_planner/config/cbf_rrt_planner.yaml` on the laptop, sync
@@ -430,6 +438,8 @@ python3 src/cbf_rrt_planner/tools/visualize_psf.py ./psf_debug_robot
 | `Odometry is X s old ... refusing to plan` | `/odometry/filtered` is not published, or TF `map → odom` is missing. Check the `rosbot` and `navigation` logs. |
 | `PSF generation in progress - send the goal again` | The first goal triggers PSF generation. Wait for `PSF ready`, then resend. |
 | `Planning REJECTED: start/goal falls into an occupied or unknown cell` | The point is outside the mapped free space. Map more, or choose another point. |
+| `Planning REJECTED: start/goal ... (inflated zone)` | The point is free, but closer to an obstacle than `inflation_robot_size`. Drive the robot away from the wall, pick a goal further from it, or lower the radius and call `cbf-real-refresh-map`. |
+| `Inflation parameters changed since the PSF was generated` / `PSF source parameters changed ...` | Inflation or PSF source was changed with `ros2 param set`. Run `cbf-real-refresh-map` to apply it. |
 | `Planning FAILED after N iterations` | No admissible path within the budget. Try a nearer goal, a larger `max_iterations`, or a weaker CBF (`kappa` up / `nominal_velocity` down). |
 | `MAP MISMATCH DETECTED` | The map grew since the PSF was generated. Run `cbf-real-refresh-map`. |
 | `FollowPath action server not available` | `navigation` is not running or not healthy yet. Check `ps -a` and its logs. |

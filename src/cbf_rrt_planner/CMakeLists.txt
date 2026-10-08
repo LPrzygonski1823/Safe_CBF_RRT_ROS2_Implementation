@@ -19,6 +19,7 @@ add_executable(planner_node
   src/poisson_solver.cpp
   src/psf_generator.cpp
   src/collision_checker.cpp
+  src/map_inflation.cpp
   src/spatial_grid.cpp
   src/rrt_star_planner.cpp
   src/planning_metrics.cpp
