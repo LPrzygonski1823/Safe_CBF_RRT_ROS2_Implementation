@@ -183,6 +183,8 @@ in the same place and orientation as during mapping.
 | `just cbf-rebuild` | Wipe `build/ install/ log/` and build from scratch. |
 | `just cbf-refresh-map` | Freeze the current map and regenerate the PSF. |
 | `just cbf-goal X Y` | Send a planning goal, e.g. `just cbf-goal 2.5 -1.0`. |
+| `just cbf-benchmark [OPTIONS]` | Offline benchmark of the planner core, no simulation needed (`--help` lists the options; `README.md` §6.2). |
+| `just cbf-benchmark-plot [RESULTS] [OPTIONS]` | Plots and summary of the benchmark results, on the host (`README.md` §6.3). |
 | `just cbf-logs` | Follow the planner logs. |
 | `just cbf-shell` | Interactive ROS 2 shell on the stack network. |
 | `just cbf-down` | Stop the whole stack. |
@@ -232,7 +234,39 @@ Run these from `just cbf-shell` (after `source /opt/ros/humble/setup.bash`), or 
 
 ## 7. Running experiments
 
-The paper compares plain RRT\* against Safe-CBF-RRT\* over a range of `c`. Recommended loop:
+The paper compares plain RRT\* against Safe-CBF-RRT\* over a range of `c`. There are two ways to
+run that comparison:
+
+- **Offline benchmark:** for the numbers, many plans with identical inputs. It needs no running
+  stack and is described in §7.1.
+- **Live node in Gazebo:** for the behaviour of the whole chain (planner, RPP, simulated robot).
+  It is described in §7.2.
+
+### 7.1 Offline benchmark
+
+```bash
+# constant source (as in the YAML), 20 reachable goals, 30 seeds, three c values + plain RRT*
+just cbf-benchmark --random-goals 20 --runs 30 --c 0.2,0.5,0.8 --baseline --tag custom_world_3
+# the same goals and seeds with the centroid source, appended to the same results.csv
+just cbf-benchmark --random-goals 20 --runs 30 --c 0.2,0.5,0.8 --baseline --tag custom_world_3 \
+                   --set psf_source=centroid
+# without inflation (point robot, as in the paper)
+just cbf-benchmark --random-goals 20 --runs 30 --c 0.2,0.5,0.8 --baseline --tag custom_world_3 \
+                   --set inflation=false
+just cbf-benchmark-plot
+```
+
+- The benchmark reads `src/cbf_rrt_planner/config/cbf_rrt_planner.yaml`; `--set key=value`
+  overrides a key for one invocation only and does not touch the file.
+- It uses `maps/map.yaml` and starts at `(0, 0)` by default. For another map pass
+  `--map path/to/map.yaml`, and `--start X,Y` if `(0, 0)` is not free there.
+- Your own goals: a text file with one `x,y` per line, passed with `--goals FILE`.
+- Results: `src/cbf_rrt_planner/benchmark/results.csv` + `results_paths.csv`; plots and
+  `summary.csv` in `src/cbf_rrt_planner/benchmark/plots/`. Column meanings: `README.md` §6.2.
+
+### 7.2 Live node
+
+Recommended loop:
 
 ```bash
 docker exec rosbot-xl-autonomy-foxglove-cbf-planner-1 bash -c \
@@ -256,6 +290,11 @@ just cbf-goal -6.98 -3.38
   `centroid` and `constant` (see `README.md` §6).
 - The start is always the robot's **current** position. To repeat a start/goal pair, drive the
   robot back (Teleop) or restart the stack (the robot respawns at the same point).
+- With `seed` set to a fixed value (`ros2 param set /planner_node seed 7`), the same start/goal
+  and parameters give the same path. With the default `-1`, every plan differs.
+- Every plan also logs `Clearance (map without inflation): min=... mean=..., footprint min=...`.
+  The same values go into the CSV columns `min_clearance`, `mean_clearance` and
+  `min_footprint_clearance`.
 - Results are appended to `src/cbf_rrt_planner/maps/psf_debug/planning_metrics.csv`. Column
   meanings and how to read them are in `README.md` §6.
 - `python3 src/cbf_rrt_planner/tools/visualize_psf.py` renders the current PSF to

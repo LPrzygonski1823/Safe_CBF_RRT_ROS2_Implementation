@@ -151,7 +151,7 @@ controller_server:
       plugin: nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController
 
       # Velocity/acceleration limits also have to be adjusted in the velocity smoother
-      desired_linear_vel: 0.4
+      desired_linear_vel: 1.0
       # pure pursuit curvature is 2*y/L^2, so a short lookahead turns a small lateral error into
       # a huge steering command. 0.6 is the Nav2 default
       lookahead_dist: 0.6

@@ -22,7 +22,7 @@ namespace cbf_rrt_planner
     : collision_checker_(collision_checker),
     psf_generator_(psf_generator),
     params_(params),
-    rng_(std::random_device{}()),
+    rng_(params.seed >= 0 ? static_cast<std::mt19937::result_type>(params.seed) : std::random_device{}()),
     spatial_grid_(params.neighbor_radius) {
     }
 

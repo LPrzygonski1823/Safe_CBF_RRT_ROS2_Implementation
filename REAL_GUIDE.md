@@ -347,11 +347,26 @@ stay an obstacle for the planner, set `free_thresh: 0.19` in `maps/map.yaml` on 
    position, so drive the robot back to the same start (Teleop) before each run, and check its
    pose in Foxglove.
 4. For each configuration (baseline, then each value of `safety_weight_c`, `kappa`,
-   `nominal_velocity`), run each start/goal pair several times. RRT\* is randomised: the RNG is
-   seeded from `std::random_device`, so every run differs.
+   `nominal_velocity`), run each start/goal pair several times. RRT\* is randomised: with the
+   default `seed: -1` every run differs. Set `seed` to a fixed value
+   (`ros2 param set /planner_node seed 7`) to get the same path for the same start and goal.
+   The start pose on the real robot never repeats exactly, though, so the paths may still
+   differ slightly.
 5. Record the CSV (§8.3) and, for the real-robot part, observe the actual execution: did the
    robot reach the goal, did it touch anything, how close did it get to walls (Foxglove
    recording, or a tape measure).
+6. For the statistics (many seeds, all configurations, both PSF sources), copy the saved map to
+   the laptop and run the offline benchmark there (`README.md` §6.2). Keep both files together
+   in their own directory, because `map.yaml` refers to `image: map.pgm`:
+
+   ```bash
+   mkdir -p maps/robot
+   scp husarion@ROBOT_IP:/home/husarion/rosbot-xl-autonomy-foxglove/maps/map.{yaml,pgm} maps/robot/
+   just cbf-benchmark --map maps/robot/map.yaml --random-goals 20 --runs 30 --c 0.2,0.5,0.8 --baseline
+   ```
+
+   Keep the robot runs for what the benchmark cannot measure: tracking, localisation and the
+   real distance to obstacles.
 
 ### 8.2 Changing parameters between runs [robot]
 
@@ -395,11 +410,19 @@ For the baseline, the PSF must already be generated, otherwise the `mean_h`, `mi
 
 ### 8.3 Metrics
 
-Each successful or failed plan appends one line to
+Each successful plan appends one line to
 `src/cbf_rrt_planner/maps/psf_debug/planning_metrics.csv` on the robot. Column meanings and how
-to read them are in `README.md` §6. In short: compare `mean_h` and `min_h` only between runs on
-the same frozen PSF (`h` is in m² and depends on the map), and note `kappa` and
-`nominal_velocity` yourself, because the run label does not include them.
+to read them are in `README.md` §6.1. In short:
+
+- compare `mean_h` and `min_h` only between runs on the same frozen PSF (`h` depends on the map
+  and on the PSF source);
+- compare across PSF sources and inflation settings with `length` and the clearance columns
+  (`min_clearance`, `mean_clearance`, `min_footprint_clearance`, in metres, measured on the map
+  without inflation);
+- note `kappa` and `nominal_velocity` yourself, because the run label does not include them.
+
+The clearance columns describe the planned path. How close the robot actually came is a
+separate measurement, e.g. the minimum `/scan` range during the run.
 
 Copy the results to the laptop:
 

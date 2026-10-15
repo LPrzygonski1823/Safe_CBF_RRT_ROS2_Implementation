@@ -34,6 +34,17 @@ planner_node:
     psf_source: constant
     psf_boundary_flux: 1.0
 
+    # RRT* sampling seed: -1 = different every plan, >= 0 = the same start/goal gives the same path
+    seed: -1
+
+    # geometric clearance metric (CSV columns min_clearance, mean_clearance, min_footprint_clearance),
+    # measured on the map WITHOUT inflation. the footprint is a rectangle aligned with the path
+    # tangent; obstacles farther than clearance_search_radius are not searched for, so the
+    # clearances are capped at that value
+    footprint_length: 0.33
+    footprint_width: 0.28
+    clearance_search_radius: 2.0
+
     # ROS integration
     path_frame_id: map
     # Nav2 controllers need a dense path; keep this at roughly the local costmap resolution

@@ -9,7 +9,7 @@ namespace cbf_rrt_planner
 {
 
     PSFGenerator::PSFGenerator()
-    : segmentation_(65, true), solver_(1.8, 1e-6, 20000) {
+    : segmentation_(65, true), solver_(1.99, 1e-6, 20000) {
     }
 
     void PSFGenerator::generate(const OccupancyGridData & map)

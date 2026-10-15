@@ -25,6 +25,7 @@
 
 #include "cbf_rrt_planner/collision_checker.hpp"
 #include "cbf_rrt_planner/map_inflation.hpp"
+#include "cbf_rrt_planner/path_clearance.hpp"
 #include "cbf_rrt_planner/planning_metrics.hpp"
 #include "cbf_rrt_planner/psf_generator.hpp"
 #include "cbf_rrt_planner/ros_conversions.hpp"
@@ -128,6 +129,13 @@ private:
     this->declare_parameter<std::string>("psf_source", "centroid"); // "centroid" or "constant"
     this->declare_parameter<double>("psf_boundary_flux", 1.0); // mean |dh/dn| on walls, "constant" only
 
+    this->declare_parameter<int>("seed", -1); // RRT* sampling seed, -1 = nondeterministic
+
+    // geometric clearance metric, measured on the map without inflation
+    this->declare_parameter<double>("footprint_length", 0.33); // [m], along the heading
+    this->declare_parameter<double>("footprint_width", 0.28);  // [m]
+    this->declare_parameter<double>("clearance_search_radius", 2.0); // clearances are capped at this [m]
+
     this->declare_parameter<std::string>("metrics_csv_path", "/workspace/src/cbf_rrt_planner/maps/psf_debug/planning_metrics.csv");
     this->declare_parameter<std::string>("path_frame_id", "map");
     this->declare_parameter<double>("path_pose_spacing", 0.05); // resampling of the published path
@@ -152,6 +160,18 @@ private:
     params.nominal_velocity = this->get_parameter("nominal_velocity").as_double();
     params.occupied_threshold =
       static_cast<int>(this->get_parameter("occupied_threshold").as_int());
+    params.seed = this->get_parameter("seed").as_int();
+    return params;
+  }
+
+  cbf_rrt_planner::ClearanceParams loadClearanceParams(int occupied_threshold) const
+  {
+    cbf_rrt_planner::ClearanceParams params;
+    params.footprint_length = this->get_parameter("footprint_length").as_double();
+    params.footprint_width = this->get_parameter("footprint_width").as_double();
+    params.search_radius = this->get_parameter("clearance_search_radius").as_double();
+    params.sample_step = current_grid_data_.resolution;
+    params.occupied_threshold = occupied_threshold;
     return params;
   }
 
@@ -454,29 +474,22 @@ private:
     bool enable_smoothing = this->get_parameter("enable_smoothing").as_bool();
 
     if (enable_smoothing) {
-      cbf_rrt_planner::PathSmoother smoother(checker, psf_ptr, params);
-      result.path = smoother.smoothPath(result.path);
+      cbf_rrt_planner::smoothResult(result, checker, psf_ptr, params);
       RCLCPP_INFO(this->get_logger(), "Path smoothed. Remaining points: %zu", result.path.size());
-
-      double final_len = 0.0;
-      double final_weighted_h_sum = 0.0;
-      for (size_t i = 0; i + 1 < result.path.size(); ++i) {
-          double x1 = result.path[i].first, y1 = result.path[i].second;
-          double x2 = result.path[i + 1].first, y2 = result.path[i + 1].second;
-          double seg_len = std::hypot(x2 - x1, y2 - y1);
-          final_len += seg_len;
-          if (psf_ptr != nullptr) {
-              final_weighted_h_sum += cbf_rrt_planner::computeAverageH(*psf_ptr, x1, y1, x2, y2, params.edge_sample_step) * seg_len;
-          }
-      }
-      result.total_length = final_len;
-      if (psf_ptr != nullptr && final_len > 1e-9) {
-          result.mean_h = final_weighted_h_sum / final_len;
-      }
     }
 
+    // measured on the live map without inflation, so it is the real gap to the obstacles
+    auto clearance = cbf_rrt_planner::computePathClearance(
+      current_grid_data_, result.path, loadClearanceParams(params.occupied_threshold));
+    result.min_clearance = clearance.min_clearance;
+    result.mean_clearance = clearance.mean_clearance;
+    result.min_footprint_clearance = clearance.min_footprint_clearance;
+    RCLCPP_INFO(
+      this->get_logger(),
+      "Clearance (map without inflation): min=%.3f m mean=%.3f m, footprint min=%.3f m",
+      result.min_clearance, result.mean_clearance, result.min_footprint_clearance);
+
     std::string csv_path = this->get_parameter("metrics_csv_path").as_string();
-    std::filesystem::create_directories(std::filesystem::path(csv_path).parent_path());
     std::string label = params.enable_cbf ? ("cbf_c" + std::to_string(params.safety_weight_c)) : "baseline_rrt_star";
     if (inflation_radius > 0.0) {label += "_infl" + std::to_string(inflation_radius);}
     if (psf_ready_) {label += "_psf-" + frozen_psf_source_;}

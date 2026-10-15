@@ -42,6 +42,13 @@ just -f justfile.real cbf-real-refresh-map      # [robot] freeze the map and gen
 just -f justfile.real cbf-real-goal 1.0 0.5     # [robot] send a goal in map coordinates
 ```
 
+Offline benchmark of the planner, no simulation needed (details in §6.2–6.3):
+
+```bash
+just cbf-benchmark --random-goals 20 --runs 30 --c 0.2,0.5,0.8 --baseline
+just cbf-benchmark-plot    # plots + summary in src/cbf_rrt_planner/benchmark/plots/
+```
+
 Foxglove runs at `http://localhost:8080` in simulation and at `http://ROBOT_IP:8080` on the robot.
 
 ---
@@ -239,6 +246,9 @@ reports distance-to-goal and speed from the action feedback.
 | `psf_boundary_flux` | 1.0 | `constant` only: mean slope of `h` on the walls; `h ≈ psf_boundary_flux · distance` next to them. |
 | `inflation` | false | Dilate obstacles before the PSF is generated. `false` = point robot, as in the paper. |
 | `inflation_robot_size` | 0.22 | Inflation radius [m]: distance from the robot centre to its farthest point. 0.22 ≈ circumscribed radius of the ROSbot XL (0.216 m, safe for any heading); 0.14 = inscribed radius. On the physical robot add a margin for map discretisation, localisation and tracking error (e.g. 0.25–0.27). |
+| `seed` | -1 | RRT\* sampling seed. `-1` = different every plan; `>= 0` = the same start/goal (and parameters) gives the same path. |
+| `footprint_length` / `footprint_width` | 0.33 / 0.28 | Rectangle used by the `min_footprint_clearance` metric [m], length along the heading. Metric only, the planner still uses the inflation disc. |
+| `clearance_search_radius` | 2.0 | Obstacles are searched for up to this distance; the clearance metrics are capped at it [m]. |
 | `path_frame_id` | map | Frame of the published path. |
 | `path_pose_spacing` | 0.05 | Resampling step. Keep ≈ local costmap resolution; larger breaks RPP. |
 | `odom_topic` | /odometry/filtered | Source of the planning start pose. |
@@ -305,7 +315,9 @@ the original Husarion project.
 
 ## 6. Metrics
 
-Each plan appends one line to `planning_metrics.csv`:
+### 6.1 Per-plan CSV (`planner_node`)
+
+Each successful plan appends one line to `planning_metrics.csv`:
 
 | Column | Meaning |
 |---|---|
@@ -314,6 +326,9 @@ Each plan appends one line to `planning_metrics.csv`:
 | `length` | path length [m] |
 | `mean_h` | length-weighted mean of `h` along the path |
 | `min_h` | smallest `h` along the path, i.e. the tightest point |
+| `min_clearance` | smallest distance from the path (robot centre) to an obstacle [m] |
+| `mean_clearance` | length-weighted mean of that distance [m] |
+| `min_footprint_clearance` | smallest gap between the robot rectangle (`footprint_length` × `footprint_width`, aligned with the path) and an obstacle [m]; `≤ 0` = the body would touch or overlap one |
 | `iterations_used` | always `max_iterations` (no early exit) |
 | `iterations_to_first_solution` | iteration that first reached the goal: the paper's "Iterations" |
 | `cbf_candidates`, `cbf_rejections`, `rejection_ratio` | edges checked by the CBF condition, edges rejected, their ratio |
@@ -332,7 +347,25 @@ Read them carefully:
   inflated by 0.22 m: `h` = 2.24 vs 0.58 at the goal `(-6.98, -3.38)`, 0.62 vs 0.51 at the start).
   The same `safety_weight_c` therefore weights safety differently, and `mean_h` / `min_h` cannot
   be compared between `_psf-centroid` and `_psf-constant` runs. Sweep `c` separately for each
-  source and compare the sources by `length` and by geometric clearance, not by `h`.
+  source and compare the sources by `length` and by the clearance columns, not by `h`.
+- The clearance columns are the geometric ground truth, independent of `h`, the PSF source and
+  the inflation:
+  - they are measured on the live map **without inflation**, after smoothing, with unknown
+    cells counted as obstacles and every occupied cell treated as its full square;
+  - the path is sampled every map cell (0.05 m) and every vertex is checked with the heading
+    before and after the turn;
+  - `min_footprint_clearance` assumes the robot faces along the path, which is how RPP drives.
+    In-place rotations at sharp vertices sweep the circumscribed disc, which only the inflation
+    radius covers;
+  - values are capped at `clearance_search_radius` (2 m), so in open areas `mean_clearance`
+    saturates.
+- With inflation on, `min_clearance` cannot drop meaningfully below `inflation_robot_size`.
+  The cell discretisation of the inflation and of the collision check allows a few millimetres
+  less: 0.216 m measured at 0.22 m. The plain RRT\* baseline sits right at this bound. The
+  useful question is how far above it each configuration keeps the path, and at what cost in
+  `length`.
+- When the column layout changes (as with the clearance columns), the existing file is moved
+  to `planning_metrics_old<N>.csv` and a new one is started, so a file never mixes layouts.
 - The label includes the inflation radius but not `kappa` or `nominal_velocity`: note those
   values yourself when you change them.
 - Measured effect of `c` on one corridor in simulation (3.81 m straight-line): `c=0.2` → length
@@ -340,6 +373,92 @@ Read them carefully:
 
 `python3 src/cbf_rrt_planner/tools/visualize_psf.py [directory]` renders `h`, `u_x` and `u_y`
 from the CSV dumps to `psf_visualization.png`.
+
+### 6.2 Offline benchmark (`cbf_benchmark`)
+
+`cbf_benchmark` runs the planner core (the same C++ as `planner_node`) without ROS, Gazebo or
+the robot. It is the tool for the numerical analysis: many plans with identical inputs, fully
+repeatable. It measures the **plans**, not their execution (no controller, no localisation
+error); execution has to be measured on the robot or in Gazebo.
+
+What one invocation does:
+
+1. Reads the planner parameters from `src/cbf_rrt_planner/config/cbf_rrt_planner.yaml` (any key
+   can be overridden with `--set key=value`) and loads a `map_server` map (`maps/map.yaml` by
+   default). The image is converted the way `nav2_map_server` converts it, so the grid is the one
+   the node receives on `/map`.
+2. Applies the inflation and generates the PSF **once** (source and inflation as configured).
+3. Checks that the start (default `0,0`, `--start X,Y`) is free in the inflated map, and exits
+   otherwise.
+4. Takes goals from a file (`--goals`, one `x,y` per line) or draws `--random-goals N` of them.
+   Drawn goals are taken from the free cells that are connected to the start and at least
+   `--min-goal-dist` away. Because a path is known to exist, every failure is a planner failure.
+5. For every goal and every seed, runs every configuration:
+   - each `safety_weight_c` from `--c 0.2,0.5,0.8`;
+   - with `--baseline`, also plain RRT\*.
+
+   The seed is `--seed + goal_id · runs + k`. It is the same for all configurations, so the
+   results can be compared **in pairs** (same goal, same random sequence, different `c`).
+6. Appends one row per plan to `--out` (default `src/cbf_rrt_planner/benchmark/results.csv`)
+   and the path vertices to `<out>_paths.csv`. It also prints a per-goal summary.
+
+Main columns of `results.csv`:
+
+| Group | Columns |
+|---|---|
+| Identification | `batch` (timestamp of the invocation), `tag` (`--tag`), `map`, `run` (row id in the batch, key into `_paths.csv`), `seed` |
+| Frozen setup | `psf_source`, `psf_boundary_flux`, `inflation_radius`, `kappa`, `nominal_velocity`, `max_iterations`, `smoothing` |
+| Configuration | `config` (`cbf` / `baseline`), `enable_cbf`, `safety_weight_c` (`nan` for the baseline) |
+| Query | `goal_id`, `start_x`, `start_y`, `goal_x`, `goal_y`, `straight_dist` |
+| Result | `success`, `failure` (`none` / `start_blocked` / `goal_blocked` / `no_path`), `length`, `length_ratio` = `length / straight_dist`, `mean_h`, `min_h`, `min_clearance`, `mean_clearance`, `min_footprint_clearance`, iteration and rejection columns as in §6.1 |
+| Timing | `plan_time_s` (search + smoothing), `psf_time_s` (once per batch) |
+
+Running it:
+
+```bash
+just cbf-benchmark --random-goals 20 --runs 30 --c 0.2,0.5,0.8 --baseline --tag map1
+just cbf-benchmark --random-goals 20 --runs 30 --c 0.2,0.5,0.8 --baseline --tag map1 \
+                   --set psf_source=centroid
+just cbf-benchmark --goals my_goals.txt --runs 10 --set inflation=false
+just cbf-benchmark --help
+```
+
+`just cbf-benchmark` builds the workspace and runs the binary in the dev container. The
+simulation does not have to be running. All batches append to the same file. The same
+`--goal-seed` (default 1) on the same map draws the same goals, so batches with different
+PSF sources or inflation can be compared goal by goal.
+
+One plan takes about 0.5 s on a laptop with the default 10 000 iterations. The PSF takes about
+1.3 s (constant source) or about 4.6 s (centroid source). 20 goals × 30 seeds × 4
+configurations ≈ 2400 plans ≈ 20 minutes.
+
+Things to keep in mind when reading the results:
+
+- The baseline does not use `h` in its cost. Its paths are identical across PSF sources for the
+  same seeds, which is a useful sanity check. Only `mean_h`, `min_h` and `rejection_ratio`
+  differ, because they are measured on the respective PSF.
+- `mean_h` / `min_h` still compare only within one PSF source (§6.1). Across sources, use
+  `length_ratio` and the clearance columns.
+- A different map needs a free start: pass `--start` if `(0, 0)` is inside an obstacle or
+  closer to one than the inflation radius.
+
+### 6.3 Plots
+
+```bash
+just cbf-benchmark-plot                                   # default results.csv
+just cbf-benchmark-plot path/to/results.csv --batch 20261013-215632 20261013-215653 --goal-id 0 3
+```
+
+`tools/plot_benchmark.py` runs on the host (`numpy`, `matplotlib`, `Pillow`). It groups the
+rows into configurations, each one a PSF source, an inflation radius and a `c` value (or the
+baseline). It writes the following to `<results dir>/plots/`:
+
+| File | Content |
+|---|---|
+| `pareto.png` | one dot per plan: `length_ratio` vs `min_footprint_clearance`; large dots are the medians. The main length-vs-safety trade-off figure |
+| `boxplots.png` | distributions of `length_ratio`, `min_clearance`, `mean_clearance`, `min_footprint_clearance`, `plan_time_s`, plus the success rate |
+| `paths_goal<N>.png` | every path to goal N over the map. The median-length path of each configuration is drawn with the robot rectangle every `--footprint-step` (0.3 m), i.e. the area swept by the body, which shows directly how much margin the inflation and the CBF leave |
+| `summary.csv` | per configuration: plans, success rate, number of plans with footprint contact, median and quartiles of every metric (also printed) |
 
 ---
 
@@ -361,12 +480,19 @@ src/cbf_rrt_planner/
     path_smoother.hpp         greedy shortcutting
     cbf_utils.hpp             computeAverageH, computeAverageInverseH, computeMinH, checkCbfCondition
     ros_conversions.hpp       the ONLY ROS<->core boundary: toGridData, toPathMsg
-    planning_metrics.hpp      CSV writer
-  src/                        implementations + planner_node.cpp (the ROS node)
-  config/cbf_rrt_planner.yaml planner parameters (symlinked into install/)
+    planning_metrics.hpp      CSV writers (header check, old layouts moved aside)
+    path_clearance.hpp        geometric clearance of a path: centre point and oriented rectangle
+    map_loader.hpp            ROS-free map.yaml + PGM reader (nav2_map_server conversion)
+  src/                        implementations, planner_node.cpp (the ROS node) and
+                              cbf_benchmark.cpp (offline benchmark, no ROS)
+  CMakeLists.txt              cbf_rrt_planner_core (ROS-free static library) linked by both
+                              planner_node and cbf_benchmark
+  config/cbf_rrt_planner.yaml planner parameters (symlinked into install/, also read by cbf_benchmark)
   launch/cbf_planner.launch.py  launch with use_sim_time and params_file arguments
   maps/psf_debug/             PSF field dumps + planning_metrics.csv
+  benchmark/                  default output of cbf_benchmark (results.csv, results_paths.csv, plots/)
   tools/visualize_psf.py      renders psf_visualization.png from the CSV dumps
+  tools/plot_benchmark.py     benchmark plots: Pareto, boxplots, paths with swept footprint, summary
 
 config/nav2_*_params.yaml     Nav2 configs, one per controller (rpp / mppi / dwb)
 config/layout.json            default Foxglove layout (3D, Teleop, Image, RosOut panels)
@@ -396,8 +522,9 @@ SIM_GUIDE.md, REAL_GUIDE.md   step-by-step guides
   space, and concave pockets get a comparatively high `h`. `psf_source: constant` avoids this,
   but gives very high `h` in large open areas (it grows with the square of the local width), so
   the `1/h` cost pulls paths towards their middle.
-- The CSV has no geometric clearance column, so comparing PSF sources currently relies on
-  `length` and on external measurements.
+- The clearance columns describe the **planned** path. The robot's real gap to obstacles also
+  depends on RPP tracking (corner cutting) and on localisation, which only on-robot or Gazebo
+  measurements capture.
 - The CBF condition restricts the **approach direction**, not clearance: motion parallel to a wall
   always passes. Goals closer to a wall than `nominal_velocity / kappa` can only be reached
   almost parallel to it.
@@ -407,8 +534,12 @@ SIM_GUIDE.md, REAL_GUIDE.md   step-by-step guides
   planning (`Planning REJECTED: start ... (inflated zone)`).
 - Every plan spends the full iteration budget, so there is no continuous replanning. Closed-loop
   replanning would need a time budget or a convergence criterion.
-- The RRT\* random generator is seeded from `std::random_device`: runs are not repeatable with
-  the same seed.
+- With the default `seed: -1` the RRT\* generator is seeded from `std::random_device`, so runs
+  of the node differ. Set `seed` to a fixed value for repeatable node runs. `cbf_benchmark` is
+  always seeded.
+- `cbf_benchmark` plans from one fixed start. Drawn goals are reachable through 4-connected
+  free cells of the inflated map, which is slightly more conservative than the planner's
+  straight edges. Its timings are laptop timings, not robot timings.
 
 **Execution**
 
@@ -425,8 +556,9 @@ SIM_GUIDE.md, REAL_GUIDE.md   step-by-step guides
 **Code and tooling**
 
 - The `Planning SUCCESS` log line reports metrics before smoothing. With `enable_smoothing: true`,
-  the CSV records `length` and `mean_h` after smoothing, but `min_h` is still the value of the
-  unsmoothed path.
+  the CSV records `length`, `mean_h` and the clearance columns after smoothing, but `min_h` is
+  still the value of the unsmoothed path (same in `cbf_benchmark`, which shares the smoothing
+  code).
 - `PlannerParams` struct defaults and the `declare_parameter` defaults are two places holding the
   same numbers; changing a default means editing both.
 - `metrics_csv_path` and the PSF export directory are absolute `/workspace/...` paths, valid only

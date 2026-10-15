@@ -147,6 +147,19 @@ cbf-goal x y: _run-as-user
         ros2 topic pub --once /cbf_goal_pose geometry_msgs/msg/PoseStamped \
         '{header: {frame_id: map}, pose: {position: {x: {{x}}, y: {{y}}, z: 0.0}, orientation: {w: 1.0} } }'"
 
+# offline planner benchmark (no simulation needed), options: `just cbf-benchmark --help`
+# e.g. `just cbf-benchmark --random-goals 20 --runs 30 --c 0.2,0.5,0.8 --baseline`
+cbf-benchmark *args: cbf-build _run-as-user
+    #!/bin/bash
+    set -e
+    {{compose_cbf}} run --rm --no-deps cbf-planner bash -c "\
+        source /opt/ros/humble/setup.bash && source /workspace/install/setup.bash && \
+        ros2 run cbf_rrt_planner cbf_benchmark {{args}}"
+
+# plots + summary of the benchmark results (runs on the host: numpy, matplotlib, Pillow)
+cbf-benchmark-plot results="src/cbf_rrt_planner/benchmark/results.csv" *args:
+    python3 src/cbf_rrt_planner/tools/plot_benchmark.py {{results}} {{args}}
+
 # interactive ROS 2 shell on the stack network (ros2 topic/node/tf debugging)
 cbf-shell: _run-as-user
     #!/bin/bash

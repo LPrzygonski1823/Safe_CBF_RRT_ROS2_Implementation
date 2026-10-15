@@ -47,6 +47,9 @@ namespace cbf_rrt_planner
 
         // common geometric collision parameter
         int occupied_threshold = 65;
+
+        // seed of the sampling generator, < 0 = nondeterministic (std::random_device)
+        long seed = -1;
     };
 
     // reason why plan() returned no path - lets the caller tell an invalid query
@@ -67,7 +70,11 @@ namespace cbf_rrt_planner
         std::vector<std::pair<double, double>>  path; // from start to goal, inclusive
         double total_length = 0.0;
         double mean_h = 0.0; // mean h along the entire path (whenever a PSF is available)
-        double min_h = std::numeric_limits<double>::infinity(); // tightest clearance on the path
+        double min_h = std::numeric_limits<double>::infinity(); // tightest point of h on the path
+        // geometric clearance on the non-inflated map (path_clearance.hpp), NaN until computed
+        double min_clearance = std::numeric_limits<double>::quiet_NaN();
+        double mean_clearance = std::numeric_limits<double>::quiet_NaN();
+        double min_footprint_clearance = std::numeric_limits<double>::quiet_NaN();
         int iterations_used = 0; // iterations actually executed by plan()
         int iterations_to_first_solution = -1; // iteration that first reached the goal, (-1) if never - "Iterations" column of the paper
         int cbf_rejections  = 0; // number of edges rejected BY CBF

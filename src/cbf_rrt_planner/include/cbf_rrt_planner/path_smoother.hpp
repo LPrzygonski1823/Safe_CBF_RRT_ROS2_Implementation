@@ -29,4 +29,12 @@ namespace cbf_rrt_planner
         bool isEdgeAdmissible(double x1, double y1, double x2, double y2) const;
     };
 
+    // smooths result.path in place and recomputes total_length and mean_h (min_h keeps the
+    // value of the unsmoothed path)
+    void smoothResult(
+        PlanningResult & result,
+        const CollisionChecker & collision_checker,
+        const PSFGenerator * psf_generator,
+        const PlannerParams & params);
+
 }
