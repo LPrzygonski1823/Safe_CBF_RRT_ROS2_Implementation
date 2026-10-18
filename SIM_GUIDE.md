@@ -18,7 +18,7 @@ COMPOSE="docker compose -f compose.simulation.yaml -f compose.cbf.yaml"
 
 | Container | Role |
 |---|---|
-| `rosbot` | Gazebo simulation of the ROSbot XL; loads `worlds/custom_world_3.sdf` |
+| `rosbot` | Gazebo simulation of the ROSbot XL; loads the world selected in `compose.simulation.yaml` (default `worlds/custom_world_u.sdf`) |
 | `navigation` | Nav2: `map_server`, AMCL, `controller_server`, `velocity_smoother`, costmaps |
 | `cbf-planner` | `planner_node`: PSF generation + RRT\* + `FollowPath` client |
 | `foxglove`, `foxglove-ds` | Web visualisation on `localhost:8080`, bridge on `8765` |
@@ -48,7 +48,8 @@ repository root.
 
 | Variable | Value | Notes |
 |---|---|---|
-| `SLAM` | `False` | Uses the pre-recorded `maps/map.yaml`. With `True`, comment out the `static-tf` service. |
+| `SLAM` | `False` | Uses the map named by `MAP_YAML`. With `True`, comment out the `static-tf` service. |
+| `MAP_YAML` | `map_u.yaml` | File inside `maps/` loaded when `SLAM=False`. `map_u.yaml` matches `custom_world_u.sdf`; `map.yaml` matches `custom_world_3.sdf`. |
 | `CONTROLLER` | `rpp` | Picks which `config/nav2_*_params.yaml` is mounted. |
 | `MECANUM` | `True` | Holonomic base in Gazebo. RPP itself never commands `vy`. |
 | `SAVE_MAP_PERIOD` | 15 | Map autosave, only when `SLAM=True` (set 0 to disable). |
@@ -58,14 +59,44 @@ repository root.
 
 ### 3.2 World selection
 
-Edit **two** lines in `compose.simulation.yaml`, the bind mount and the `world:=` argument:
+The default world is `worlds/custom_world_u.sdf` (U-shaped obstacles and one closed O), with
+Nav2 loading `maps/map_u.yaml` via `MAP_YAML`. `worlds/custom_world_3.sdf` and `maps/map.yaml`
+are the original box-and-cylinder world. Both share the same outer wall and the same map
+`origin`.
+
+`compose.simulation.yaml` binds the world into the `rosbot` container and passes it as
+`world:=`. Nav2 loads `map:=/maps/${MAP_YAML:-map.yaml}`. To return to world 3, change those
+two lines and set `MAP_YAML=map.yaml` in `.env`:
 
 ```yaml
 - ./worlds/custom_world_3.sdf:/custom_world_3.sdf
 command: ... world:=/custom_world_3.sdf headless:=False
 ```
 
-Changing the world invalidates `maps/map.pgm`: record a new map first (§5).
+Do not overwrite `maps/map.pgm` or `maps/map.yaml` with a recording from the U world. That pair
+is the map of world 3.
+
+The `map` frame is the robot's spawn, not the SDF origin. The robot appears at world `(0, 2)`,
+which is map `(0, 0)`. Interior obstacles therefore sit at world `(x_map, y_map + 2)`, with no
+shift in `x` and no rotation. `just cbf-goal` takes map coordinates. The inside of the large
+south-opening U "A" is:
+
+```bash
+just cbf-goal -6.0 4.5
+```
+
+After start-up, check in Foxglove that `/scan` lies on the walls drawn in `/map`. A uniform 2 m
+offset means the world file was built without the y shift.
+
+Regenerate the image and the SDF from the same obstacle list (this does not touch
+`maps/map.pgm` or `maps/map.yaml`):
+
+```bash
+python3 tools/generate_u_world.py
+```
+
+Each U is three static boxes and the O is four, walls 0.3 m thick and 1 m tall. The script
+keeps the floor, the sun and the `wall_box_*` shell from `custom_world_3.sdf`.
 
 ---
 
@@ -111,9 +142,9 @@ Wait for `PSF ready (N obstacles). Exported.` in the planner log.
 
 ### Step 4. Send a goal
 
-Coordinates are in the `map` frame. They are **not** Gazebo world coordinates: for the bundled
-map, `map ≈ world + (0.05, −1.94)` m, because the map recording started at the robot's spawn
-point.
+Coordinates are in the `map` frame. On `map_u`, world `(x, y)` is map `(x, y − 2)`: the robot
+spawns at world `(0, 2)`. The recorded `map.yaml` of world 3 is the SLAM estimate of that same
+spawn, about `map ≈ world + (0.05, −1.94)` m.
 
 ```bash
 just cbf-goal 2.0 1.5
@@ -162,6 +193,9 @@ just cbf-down
    ```
 
    This writes `maps/map.pgm` and `maps/map.yaml` (the `maps/` directory is mounted).
+   While `custom_world_u.sdf` is loaded, pass `-f /maps/map_u_slam` instead, so the world-3
+   map and the synthetic `map_u` used by the benchmark stay intact. Point `MAP_YAML` at the
+   file you saved.
 5. Set `SLAM=False`, uncomment `static-tf`, then `just cbf-down` and `just cbf-up`.
 6. `just cbf-refresh-map` to generate the PSF on the new map.
 

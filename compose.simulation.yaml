@@ -23,8 +23,8 @@ services:
     - /dev/dri:/dev/dri
     volumes:
       - /tmp/.X11-unix:/tmp/.X11-unix:rw
-      - ./worlds/custom_world_3.sdf:/custom_world_3.sdf
-    command: ${SIMULATION_COMMAND:-ros2 launch rosbot_xl_gazebo simulation.launch.py mecanum:=${MECANUM:-True}} world:=/custom_world_3.sdf headless:=False
+      - ./worlds/custom_world_u.sdf:/custom_world_u.sdf
+    command: ${SIMULATION_COMMAND:-ros2 launch rosbot_xl_gazebo simulation.launch.py mecanum:=${MECANUM:-True}} world:=/custom_world_u.sdf headless:=False
 
   navigation:
     image: husarion/navigation2:humble-1.1.12-20240123
@@ -37,7 +37,7 @@ services:
       ros2 launch nav2_bringup bringup_launch.py
         slam:=${SLAM:-True}
         params_file:=/params.yaml
-        map:=/maps/map.yaml
+        map:=/maps/${MAP_YAML:-map.yaml}
         use_sim_time:=True
 
   foxglove:
