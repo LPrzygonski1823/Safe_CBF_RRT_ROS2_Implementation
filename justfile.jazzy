@@ -1,0 +1,160 @@
+set dotenv-load
+set dotenv-filename := ".env.real"
+
+# physical ROSbot XL (snaps on the host) + Jazzy containers; the Humble simulation uses justfile
+compose := "docker compose --env-file .env.real -f compose.jazzy.yaml"
+
+[private]
+default:
+    @just -f {{justfile()}} --list --unsorted
+
+# [laptop] copy the repo to the robot, without host build artifacts and heavy editor files
+cbf-real-sync hostname password="husarion": _run-as-user
+    #!/bin/bash
+    set -e
+    sshpass -p "{{password}}" rsync -av --delete \
+        --exclude='.git/' --exclude='.vscode/' --exclude='build/' --exclude='install/' \
+        --exclude='log/' --exclude='maps/' --exclude='__pycache__/' \
+        ./ husarion@{{hostname}}:/home/husarion/${PWD##*/}
+
+# [robot] build the Jazzy image (nav2, slam_toolbox, foxglove bridge, planner toolchain)
+cbf-real-image: _run-as-user _check-real-env
+    #!/bin/bash
+    set -e
+    mkdir -m 775 -p maps
+    {{compose}} build cbf-planner
+
+# [robot] build the planner; wipes artifacts built for another architecture or ROS distro
+cbf-real-build: _run-as-user _check-real-env
+    #!/bin/bash
+    set -e
+    {{compose}} run --rm --no-deps cbf-planner bash -c '\
+        tag="$(uname -m)-$ROS_DISTRO"; \
+        if [ -d install ] && [ "$(cat install/.built_tag 2>/dev/null)" != "$tag" ]; then \
+            echo "install/ was built for another architecture or ROS distro - wiping build artifacts"; \
+            rm -rf build install log; \
+        fi && \
+        source /opt/ros/$ROS_DISTRO/setup.bash && \
+        colcon build --symlink-install --cmake-args -DCMAKE_BUILD_TYPE=Release && \
+        echo "$tag" > install/.built_tag'
+
+# wipe build artifacts and build from scratch
+cbf-real-rebuild: _run-as-user _check-real-env
+    #!/bin/bash
+    set -e
+    {{compose}} run --rm --no-deps cbf-planner bash -c '\
+        rm -rf build install log && \
+        source /opt/ros/$ROS_DISTRO/setup.bash && \
+        colcon build --symlink-install --cmake-args -DCMAKE_BUILD_TYPE=Release && \
+        echo "$(uname -m)-$ROS_DISTRO" > install/.built_tag'
+
+# build, then start Nav2/SLAM, laser TF, Foxglove, teleop relay and the planner; follow planner logs
+cbf-real: cbf-real-build _run-as-user
+    #!/bin/bash
+    set -e
+    mkdir -m 775 -p maps
+    {{compose}} up -d
+    # a plain `up -d` leaves a running planner on the binary loaded before the build above
+    {{compose}} up -d --force-recreate --no-deps cbf-planner
+    {{compose}} logs -f cbf-planner
+
+# rebuild the planner and restart only its container
+cbf-real-restart: cbf-real-build _run-as-user
+    #!/bin/bash
+    set -e
+    {{compose}} up -d --force-recreate --no-deps cbf-planner
+    {{compose}} logs -f cbf-planner
+
+# freeze the current map and (re)generate the PSF
+cbf-real-refresh-map: _run-as-user
+    #!/bin/bash
+    {{compose}} exec cbf-planner bash -c "\
+        source /opt/ros/\$ROS_DISTRO/setup.bash && source /workspace/install/setup.bash && \
+        ros2 service call /refresh_map std_srvs/srv/Trigger"
+
+# send a planning goal in the map frame, e.g. `just -f justfile.jazzy cbf-real-goal 0.5 0.0`
+cbf-real-goal x y: _run-as-user
+    #!/bin/bash
+    {{compose}} exec cbf-planner bash -c "\
+        source /opt/ros/\$ROS_DISTRO/setup.bash && source /workspace/install/setup.bash && \
+        ros2 topic pub --once /cbf_goal_pose geometry_msgs/msg/PoseStamped \
+        '{header: {frame_id: map}, pose: {position: {x: {{x}}, y: {{y}}, z: 0.0}, orientation: {w: 1.0} } }'"
+
+# stop Nav2, so no more velocity commands reach the base
+cbf-real-stop-nav: _run-as-user
+    #!/bin/bash
+    {{compose}} stop navigation
+
+# stop the Foxglove teleop relay, so the Teleop panel can no longer drive the base
+cbf-real-stop-teleop: _run-as-user
+    #!/bin/bash
+    {{compose}} stop teleop-relay
+
+# (re)start the Foxglove teleop relay after editing scripts/teleop_relay.py
+cbf-real-teleop-restart: _run-as-user
+    #!/bin/bash
+    set -e
+    {{compose}} up -d --force-recreate --no-deps teleop-relay
+    {{compose}} logs -f teleop-relay
+
+# follow the teleop relay logs
+cbf-real-teleop-logs: _run-as-user
+    #!/bin/bash
+    {{compose}} logs -f teleop-relay
+
+# save the current SLAM map to maps/map.pgm + maps/map.yaml
+cbf-real-save-map: _run-as-user
+    #!/bin/bash
+    {{compose}} exec navigation bash -c "\
+        source /opt/ros/jazzy/setup.bash && \
+        ros2 run nav2_map_server map_saver_cli -f /maps/map \
+        --ros-args -p save_map_timeout:=15.0 -p use_sim_time:=false"
+
+# inputs and outputs of the planner: scan, odometry, TF chain, cmd_vel type and rate
+cbf-real-check: _run-as-user
+    #!/bin/bash
+    {{compose}} exec cbf-planner bash -c "\
+        source /opt/ros/\$ROS_DISTRO/setup.bash && \
+        timeout 5 ros2 topic hz /scan; \
+        timeout 5 ros2 topic hz /odometry/filtered; \
+        timeout 5 ros2 run tf2_ros tf2_echo map base_link; \
+        timeout 5 ros2 run tf2_ros tf2_echo base_link laser; \
+        ros2 topic info /autonomous/cmd_vel -v; \
+        ros2 param get /planner_node use_sim_time"
+
+# follow the planner logs
+cbf-real-logs: _run-as-user
+    #!/bin/bash
+    {{compose}} logs -f cbf-planner
+
+# follow the Nav2 / SLAM logs
+cbf-real-nav-logs: _run-as-user
+    #!/bin/bash
+    {{compose}} logs -f navigation
+
+# interactive ROS 2 shell
+cbf-real-shell: _run-as-user
+    #!/bin/bash
+    {{compose}} run --rm --no-deps cbf-planner bash
+
+# stop the whole stack
+cbf-real-down: _run-as-user
+    #!/bin/bash
+    {{compose}} down
+
+[private]
+_check-real-env:
+    #!/bin/bash
+    if [ "${USE_SIM_TIME:-True}" != "False" ]; then
+        echo -e "\e[1;33mUSE_SIM_TIME is '${USE_SIM_TIME:-True (default)}' - set USE_SIM_TIME=False in .env.real\e[0m"
+        exit 1
+    fi
+    echo "USE_SIM_TIME=${USE_SIM_TIME}"
+
+[private]
+_run-as-user:
+    #!/bin/bash
+    if [ "$EUID" -eq 0 ]; then
+        echo -e "\e[1;33mPlease re-run as non-root user\e[0m"
+        exit 1
+    fi

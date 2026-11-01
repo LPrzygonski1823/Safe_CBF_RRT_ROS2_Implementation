@@ -7,8 +7,9 @@ Plots of the offline benchmark (cbf_benchmark) results.
 Writes to <results dir>/plots/:
   pareto.png         path length ratio vs minimum footprint clearance, one dot per plan
   boxplots.png       distributions per configuration + success rate
-  paths_goal<N>.png  all paths to one goal over the map, with the robot footprint drawn along
-                     the median-length path of every configuration (swept area)
+  paths_goal<N>.png  one file per goal in the results: all paths to that goal over the map,
+                     with the robot footprint drawn along the median-length path of every
+                     configuration (swept area). Limit the set with --goal-id.
   summary.csv        medians / quartiles per configuration (also printed)
 
 A configuration is psf_source + inflation radius + (c value or baseline). Rows of several batches
@@ -293,7 +294,7 @@ def main():
     ap.add_argument("--paths", help="paths CSV (default: <results>_paths.csv)")
     ap.add_argument("--map", default="maps/map.yaml", help="map yaml for the path plots")
     ap.add_argument("--batch", nargs="*", default=[], help="only these batch ids")
-    ap.add_argument("--goal-id", type=int, nargs="*", default=[0], help="goals to draw paths for")
+    ap.add_argument("--goal-id", type=int, nargs="*", default=None, help="goals to draw paths for (default: every goal_id in the results)")
     ap.add_argument("--footprint", type=float, nargs=2, default=[0.33, 0.28], metavar=("LENGTH", "WIDTH"))
     ap.add_argument("--footprint-step", type=float, default=0.3, help="spacing of drawn footprints [m]")
     ap.add_argument("--out-dir", help="default: <results dir>/plots")
@@ -311,10 +312,9 @@ def main():
     plot_pareto(rows, groups, colors, os.path.join(out_dir, "pareto.png"))
     plot_boxplots(rows, groups, colors, os.path.join(out_dir, "boxplots.png"))
     if os.path.exists(paths_csv) and os.path.exists(args.map):
-        for gid in args.goal_id:
-            plot_paths(rows, groups, colors, paths_csv, args.map, gid, args.footprint[0],
-                       args.footprint[1], args.footprint_step,
-                       os.path.join(out_dir, f"paths_goal{gid}.png"))
+        goal_ids = args.goal_id if args.goal_id else sorted({int(r["goal_id"]) for r in rows})
+        for gid in goal_ids:
+            plot_paths(rows, groups, colors, paths_csv, args.map, gid, args.footprint[0], args.footprint[1], args.footprint_step, os.path.join(out_dir, f"paths_goal{gid}.png"))
     else:
         print(f"skipping path plots: {paths_csv} or {args.map} not found")
     print(f"plots written to {out_dir}")

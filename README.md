@@ -3,7 +3,8 @@
 Implementation and experimental verification of **Safe-CBF-RRT\***: an RRT\* planner whose edge
 cost and edge admissibility are driven by a **Poisson Safety Function (PSF)** `h(x,y)` derived
 from the occupancy map. The planner runs as a standalone ROS 2 node that feeds paths to the
-Nav2 controller of a Husarion ROSbot XL, both in Gazebo and on the physical robot.
+Nav2 controller of a Husarion ROSbot XL, both in Gazebo (ROS 2 Humble) and on the physical robot
+(ROS 2 Jazzy).
 
 This file describes the project: architecture, algorithms, configuration, metrics, repository
 layout and limitations. Step-by-step instructions and command references are in two guides:
@@ -11,7 +12,7 @@ layout and limitations. Step-by-step instructions and command references are in 
 | Guide | Contents |
 |---|---|
 | [`SIM_GUIDE.md`](SIM_GUIDE.md) | Gazebo simulation: setup, start-up, `just cbf-*` recipes, map recording, experiments, diagnostics |
-| [`REAL_GUIDE.md`](REAL_GUIDE.md) | Physical ROSbot XL: connection, deployment, `justfile.real` recipes, mapping, safety, experiments, troubleshooting |
+| [`REAL_GUIDE.md`](REAL_GUIDE.md) | Physical ROSbot XL (Jazzy): connection, deployment, `justfile.jazzy` recipes, mapping, teleop, safety, experiments, troubleshooting |
 
 ## Note on original source
 
@@ -33,13 +34,14 @@ just cbf-refresh-map     # freeze the map and generate the PSF
 just cbf-goal 2.0 1.5    # send a goal in map coordinates
 ```
 
-Physical robot (details in `REAL_GUIDE.md`; `.env` on the robot needs `USE_SIM_TIME=False`):
+Physical robot (details in `REAL_GUIDE.md`; settings in `.env.real`):
 
 ```bash
-just -f justfile.real cbf-real-sync ROBOT_IP    # [laptop] deploy the code
-just -f justfile.real cbf-real                  # [robot] build + start, follow planner logs
-just -f justfile.real cbf-real-refresh-map      # [robot] freeze the map and generate the PSF
-just -f justfile.real cbf-real-goal 1.0 0.5     # [robot] send a goal in map coordinates
+just -f justfile.jazzy cbf-real-sync ROBOT_IP    # [laptop] deploy the code
+just -f justfile.jazzy cbf-real-image            # [robot] build the image (once)
+just -f justfile.jazzy cbf-real                  # [robot] build + start, follow planner logs
+just -f justfile.jazzy cbf-real-refresh-map      # [robot] freeze the map and generate the PSF
+just -f justfile.jazzy cbf-real-goal 1.0 0.5     # [robot] send a goal in map coordinates
 ```
 
 Offline benchmark of the planner, no simulation needed (details in §6.2–6.3):
@@ -49,31 +51,34 @@ just cbf-benchmark --random-goals 20 --runs 30 --c 0.2,0.5,0.8 --baseline
 just cbf-benchmark-plot    # plots + summary in src/cbf_rrt_planner/benchmark/plots/
 ```
 
-Foxglove runs at `http://localhost:8080` in simulation and at `http://ROBOT_IP:8080` on the robot.
+Foxglove runs at `http://localhost:8080` in simulation. On the robot, connect the Foxglove desktop
+app to `ws://ROBOT_IP:8765` (a web UI is also served at `http://ROBOT_IP:8080`).
 
 ---
 
 ## 1. System overview
 
-The stack is a set of Docker containers. In simulation it is `compose.simulation.yaml` +
-`compose.cbf.yaml`, driven by `justfile`. On the robot it is `compose.yaml` + `compose.cbf.yaml`,
-driven by `justfile.real`.
+The stack is a set of Docker containers. The simulation runs ROS 2 **Humble**:
+`compose.simulation.yaml` + `compose.cbf.yaml`, driven by `justfile` and `.env`. The physical
+robot runs ROS 2 **Jazzy** natively (drivers and lidar as snaps on the host), so it has its own
+stack: `compose.jazzy.yaml` + `dockerfile.jazzy`, driven by `justfile.jazzy` and `.env.real`. The
+planner source is the same; it is built against the distro of its container.
 
-| Container | Simulation | Physical robot |
+| Component | Simulation (Humble) | Physical robot (Jazzy) |
 |---|---|---|
-| `rosbot` | Gazebo simulation of the ROSbot XL; loads a custom `.sdf` world (`dockerfile.rosbot`) | ROSbot XL drivers and `robot_localization` EKF (`/odometry/filtered`, TF `odom → base_link`) |
-| `microros` | — | micro-ROS agent connecting the STM32 board (motors, encoders, IMU) |
-| `rplidar` | — | RPLidar driver |
-| `navigation` | Nav2: `map_server`, AMCL, `controller_server`, `velocity_smoother`, costmaps (slam_toolbox when `SLAM=True`) | the same, with `use_sim_time:=False` |
-| `cbf-planner` | **this project's** `planner_node`: PSF generation + RRT\* + `FollowPath` client (`dockerfile.dev`) | the same |
-| `foxglove`, `foxglove-ds` | Web visualisation on port `8080`, WebSocket bridge on port `8765` | the same |
+| robot | `rosbot` container: Gazebo simulation of the ROSbot XL with a custom `.sdf` world (`dockerfile.rosbot`) | `rosbot` snap on the host: drivers, `robot_localization` EKF (`/odometry/filtered`, TF `odom → base_link`), `twist_mux` |
+| lidar | simulated in Gazebo | `husarion-rplidar` snap on the host (`/scan`) + `laser-tf` container (static `cover_link → laser`) |
+| `navigation` | Husarion Nav2 bringup: `map_server`, AMCL, `planner_server`, `bt_navigator`, `controller_server`, `velocity_smoother`, costmaps (slam_toolbox when `SLAM=True`) | `launch/nav2_real.launch.py`: slam_toolbox (mapping), `controller_server`, `velocity_smoother` only |
+| `cbf-planner` | **this project's** `planner_node`: PSF generation + RRT\* + `FollowPath` client (`dockerfile.dev`, `ros:humble`) | the same (`dockerfile.jazzy`, `ros:jazzy`) |
+| `foxglove`, `foxglove-ds` | Web visualisation on port `8080`, WebSocket bridge on port `8765` | the same; the desktop app connects to `8765` directly |
+| `teleop-relay` | — | Foxglove Teleop panel (`Twist`) → `twist_mux` manual input (`TwistStamped`) |
 | `static-tf` | Identity `map → odom` transform (only valid when `SLAM=False`) | — |
 
 Nav2's own global planner and BT navigator are not used for planning. The planner node replaces
-the global planner and talks to `controller_server` directly through the `FollowPath` action.
-`planner_server` and `bt_navigator` still run, and **take over** if anything publishes on
-`/goal_pose` (e.g. Foxglove's "Publish pose" with default settings). Planner goals go to
-`/cbf_goal_pose`.
+the global planner and talks to `controller_server` directly through the `FollowPath` action. In
+simulation, `planner_server` and `bt_navigator` still run, and **take over** if anything publishes
+on `/goal_pose` (e.g. Foxglove's "Publish pose" with default settings). The robot stack does not
+start them. Planner goals go to `/cbf_goal_pose`.
 
 ---
 
@@ -98,8 +103,14 @@ the global planner and talks to `controller_server` directly through the `Follow
                                         [ controller_server: RPP ]
                                                      |  /cmd_vel_nav
                                                      v
-                                        [ velocity_smoother ] --/cmd_vel--> Gazebo base / ROSbot base
+                                        [ velocity_smoother ] --/cmd_vel--> Gazebo base
+                                                     |
+                                                     +--/autonomous/cmd_vel--> twist_mux --> ROSbot base
 ```
+
+On the robot, `velocity_smoother` publishes `TwistStamped` on `/autonomous/cmd_vel`, one of the
+inputs of the snap's `twist_mux`, and there is no `map_server`: the map always comes from
+slam_toolbox.
 
 The robot's pose in the map comes from TF: `map → odom` (static-tf, AMCL or slam_toolbox) composed
 with `odom → base_link` (EKF). The planner transforms odometry and goals into `map`.
@@ -121,7 +132,7 @@ the same inflated map.
    `ObstacleInterior`, `ObstacleBoundary` (∂Ω_i) or `DomainBoundary` (∂Ω). Each obstacle gets a
    centroid `c_i`, computed from all of its cells.
 2. **`PoissonSolver::solveLaplaceVector`**: solves the Laplace equation twice (for `u_x` and
-   `u_y`) with Gauss-Seidel + successive over-relaxation (ω = 1.8, tolerance 1e-6, at most
+   `u_y`) with Gauss-Seidel + successive over-relaxation (ω = 1.99, tolerance 1e-6, at most
    20 000 sweeps). The Dirichlet condition on obstacle boundaries is
    `u = boundary_scale · (p − c_i)`, i.e. the vector from the obstacle's centroid to the boundary
    cell, so the field points away from each obstacle; `u = 0` on the domain boundary. This is equation (4) of the paper. `c_i` read as a
@@ -239,12 +250,12 @@ reports distance-to-goal and speed from the action feedback.
 | `enable_cbf` | true | `false` = plain RRT\* baseline (CBF measured but not enforced, cost = length). |
 | `kappa` | 5.0 | κ of equation (3). Larger = more permissive CBF condition. |
 | `safety_weight_c` | 0.2 | **Main experimental knob.** 1.0 = length only, 0.0 = safety only. |
-| `nominal_velocity` | 1.0 | Assumed speed along an edge when evaluating the CBF condition. Not sent to the controller (RPP drives at 0.4 m/s). |
+| `nominal_velocity` | 1.0 | Assumed speed along an edge when evaluating the CBF condition. Not sent to the controller (see `desired_linear_vel` in §5.2). |
 | `occupied_threshold` | 65 | Occupancy value treated as obstacle (0–100); unknown counts as occupied. |
 | `enable_smoothing` | false | Greedy shortcutting after the search. |
 | `psf_source` | constant | Source term of the Poisson equation: `centroid` (paper, equations 4–5) or `constant` (average flux, Bahati et al.). |
 | `psf_boundary_flux` | 1.0 | `constant` only: mean slope of `h` on the walls; `h ≈ psf_boundary_flux · distance` next to them. |
-| `inflation` | false | Dilate obstacles before the PSF is generated. `false` = point robot, as in the paper. |
+| `inflation` | true | Dilate obstacles before the PSF is generated. `false` = point robot, as in the paper. |
 | `inflation_robot_size` | 0.22 | Inflation radius [m]: distance from the robot centre to its farthest point. 0.22 ≈ circumscribed radius of the ROSbot XL (0.216 m, safe for any heading); 0.14 = inscribed radius. On the physical robot add a margin for map discretisation, localisation and tracking error (e.g. 0.25–0.27). |
 | `seed` | -1 | RRT\* sampling seed. `-1` = different every plan; `>= 0` = the same start/goal (and parameters) gives the same path. |
 | `footprint_length` / `footprint_width` | 0.33 / 0.28 | Rectangle used by the `min_footprint_clearance` metric [m], length along the heading. Metric only, the planner still uses the inflation disc. |
@@ -273,7 +284,8 @@ reports distance-to-goal and speed from the action feedback.
 
 ### 5.2 Controller: `config/nav2_rpp_params.yaml`
 
-Selected by `CONTROLLER` in `.env`. Values that matter for path following (already tuned):
+Simulation. Selected by `CONTROLLER` in `.env`. Values that matter for path following (already
+tuned):
 
 | Parameter | Value | Why |
 |---|---|---|
@@ -282,30 +294,50 @@ Selected by `CONTROLLER` in `.env`. Values that matter for path following (alrea
 | `rotate_to_heading_min_angle` | 0.785 | Below this heading error, normal steering corrects instead of stopping to rotate. |
 | `max_angular_accel` / `rotate_to_heading_angular_vel` | 3.2 / 1.5 | Matched to `velocity_smoother` limits (`max_accel[2]`, `max_velocity[2]`). |
 | `movement_time_allowance` | 30.0 | Rotating in place produces no translation, so the progress checker needs slack. |
-| `desired_linear_vel` | 0.4 | Cruise speed. |
+| `desired_linear_vel` | 1.0 | Cruise speed requested by RPP. `velocity_smoother` caps it at 0.5 m/s (`max_velocity[0]`). |
 | `xy_goal_tolerance` / `yaw_goal_tolerance` | 0.1 / 0.3 | Goal checker acceptance. |
 | `use_collision_detection` | false | RPP does **not** stop for obstacles in the local costmap. |
 
 `config/nav2_dwb_params.yaml`, `nav2_mppi_params.yaml` and their `*_webots_*` variants come from
 the original Husarion project.
 
-### 5.3 Stack: `.env`
+The physical robot uses `config/nav2_real_params.yaml` (RPP with the same lookahead, but
+`desired_linear_vel` 0.2 m/s, `velocity_smoother` limit 0.3 m/s / 1.0 rad/s, stamped velocity
+output for `twist_mux`) and `config/slam_toolbox_real.yaml`. Both are described in
+`REAL_GUIDE.md` §2.2.
 
-| Variable | Simulation | Physical robot | Notes |
-|---|---|---|---|
-| `USE_SIM_TIME` | unset or `True` | `False` (must be added) | Clock of the planner container. `justfile.real` refuses to build or start unless it is `False`. |
-| `SLAM` | `False` | `True` (or `False` with a map recorded on the robot) | `False` uses `maps/map.yaml`. With `True` in simulation, comment out the `static-tf` service. |
-| `CONTROLLER` | `rpp` | `rpp` | Picks which `config/nav2_*_params.yaml` is mounted. |
-| `MECANUM` | `True` | wheel type | Holonomic base. RPP itself never commands `vy`. |
-| `SAVE_MAP_PERIOD` | 15 | — | Map autosave, only when `SLAM=True` (passed to Nav2 in `compose.simulation.yaml`). |
-| `LIDAR_BAUDRATE` | — | lidar model | `1000000` S2/S3, `256000` S1/A2M12/A3, `115200` A2M8. |
-| `ROBOT_NAMESPACE` | — | Husarnet name | Used by the original `just sync` recipe. |
+### 5.3 Stack: `.env` (simulation) and `.env.real` (robot)
+
+`.env`, simulation:
+
+| Variable | Value | Notes |
+|---|---|---|
+| `USE_SIM_TIME` | unset or `True` | Clock of the planner container (Gazebo `/clock`). |
+| `SLAM` | `False` | `False` loads the map named by `MAP_YAML`. With `True`, comment out the `static-tf` service. |
+| `MAP_YAML` | `map_u.yaml` | Map file inside `maps/` loaded when `SLAM=False`. |
+| `CONTROLLER` | `rpp` | Picks which `config/nav2_*_params.yaml` is mounted. |
+| `MECANUM` | `True` | Holonomic base. RPP itself never commands `vy`. |
+| `SAVE_MAP_PERIOD` | 15 | Map autosave, only when `SLAM=True` (passed to Nav2 in `compose.simulation.yaml`). |
+
+`.env.real`, physical robot (details in `REAL_GUIDE.md` §2.1):
+
+| Variable | Value | Notes |
+|---|---|---|
+| `USE_SIM_TIME` | `False` | Required; the `justfile.jazzy` build recipes refuse to run otherwise. |
+| `LASER_X/Y/Z`, `LASER_YAW` | `0, 0, 0`, `3.14159265` | Static TF `cover_link → laser`. |
+| `ROBOT_IP` | robot address | Bridge address for the optional Foxglove web UI. |
 
 ### 5.4 Maps and worlds
 
 - `maps/map.pgm` + `maps/map.yaml`: pre-recorded static map (0.05 m/pixel, 466 × 466 px,
   origin `[-11.6, -13.6, 0]`) of `worlds/custom_world_3.sdf`. Changing the world invalidates it.
   Recording a new one is described in `SIM_GUIDE.md`.
+- `maps/map_u.pgm` + `maps/map_u.yaml`: synthetic map with U-shaped obstacles, same size and
+  outer wall as `map.pgm`. `tools/generate_u_world.py` generates it together with the matching
+  `worlds/custom_world_u.sdf` (default simulation world, `MAP_YAML=map_u.yaml`) from one obstacle
+  list.
+- Maps recorded on the physical robot stay on the robot (`maps/` is never synced); copy them to
+  their own directory, e.g. `maps/robot/` (`REAL_GUIDE.md` §7–8).
 - With `free_thresh: 0.25`, pixels saved as "unknown" (value 205) are loaded as **free**. Set
   `free_thresh` below 0.196 to keep them unknown, and therefore obstacles for the planner.
 - The `map` frame's origin is where the robot stood when the map recording started. Goal
@@ -494,18 +526,24 @@ src/cbf_rrt_planner/
   tools/visualize_psf.py      renders psf_visualization.png from the CSV dumps
   tools/plot_benchmark.py     benchmark plots: Pareto, boxplots, paths with swept footprint, summary
 
-config/nav2_*_params.yaml     Nav2 configs, one per controller (rpp / mppi / dwb)
-config/layout.json            default Foxglove layout (3D, Teleop, Image, RosOut panels)
+config/nav2_*_params.yaml     simulation Nav2 configs, one per controller (rpp / mppi / dwb)
+config/nav2_real_params.yaml  robot Nav2 config: RPP, local costmap, velocity_smoother (Jazzy)
+config/slam_toolbox_real.yaml robot slam_toolbox config
+config/layout.json            default Foxglove web layout (3D, Teleop, Image, RosOut panels)
+launch/nav2_real.launch.py    robot Nav2 subset: slam_toolbox, controller_server, velocity_smoother
 worlds/custom_world_*.sdf     custom Gazebo worlds
-maps/map.pgm, maps/map.yaml   pre-recorded static map
-compose.simulation.yaml       Gazebo + Nav2 + Foxglove + static-tf
-compose.yaml                  physical ROSbot XL: drivers, micro-ROS, RPLidar, Nav2, Foxglove
-compose.cbf.yaml              overlay adding the cbf-planner service to either stack
-dockerfile.dev                planner container (ros:humble + nav2_msgs + rclcpp_action)
+maps/map*.pgm, maps/map*.yaml pre-recorded static maps of the simulation worlds
+tools/generate_u_world.py     generates maps/map_u.* and worlds/custom_world_u.sdf from one obstacle list
+compose.simulation.yaml       simulation (Humble): Gazebo + Nav2 + Foxglove + static-tf
+compose.cbf.yaml              simulation overlay adding the cbf-planner service
+compose.jazzy.yaml            physical robot (Jazzy): Nav2/SLAM, laser TF, planner, Foxglove, teleop relay
+dockerfile.dev                simulation planner container (ros:humble + nav2_msgs + rclcpp_action)
 dockerfile.rosbot             Gazebo container (rosbot-xl-gazebo + nav2_msgs + rclcpp_action)
-scripts/cbf_planner_entrypoint.sh  container startup (build guard + ros2 launch)
-justfile                      simulation recipes (just cbf-*) + original Husarion recipes
-justfile.real                 physical robot recipes (just -f justfile.real cbf-real-*)
+dockerfile.jazzy              robot image (ros:jazzy + Nav2 + slam_toolbox + foxglove_bridge), shared by all robot containers
+scripts/cbf_planner_entrypoint.sh  planner container startup (build guard + ros2 launch), both distros
+scripts/teleop_relay.py       Foxglove Teleop (Twist) -> twist_mux (TwistStamped) with a silence timeout
+justfile, .env                simulation recipes (just cbf-*) + original Husarion simulation recipes
+justfile.jazzy, .env.real     physical robot recipes (just -f justfile.jazzy cbf-real-*)
 SIM_GUIDE.md, REAL_GUIDE.md   step-by-step guides
 ```
 
@@ -547,7 +585,11 @@ SIM_GUIDE.md, REAL_GUIDE.md   step-by-step guides
   is under-used. `velocity_smoother` also caps `vy` at 0.
 - RPP has `use_collision_detection: false` and does not know `h`: nothing in the chain stops the
   robot for an obstacle missing from the frozen map. It also cuts corners at sharp path turns.
-- `nominal_velocity` (1.0 m/s) differs from the actual cruise speed (0.4 m/s).
+- `nominal_velocity` (1.0 m/s) differs from the actual cruise speed: at most 0.5 m/s in
+  simulation (`velocity_smoother` cap) and 0.2 m/s on the robot.
+- On the robot, slam_toolbox always runs in mapping mode and there is no map loading or AMCL:
+  every restart of `navigation` starts a new map with a new origin, so a saved robot map is a
+  record and benchmark input, not something the robot can localise in again.
 - With `SLAM=False` in simulation, the `static-tf` service publishes an identity `map → odom`,
   i.e. perfect localisation. Fine for planner experiments, not representative of the physical
   robot. The standard Nav2 bringup also starts AMCL in this mode; check with `view_frames` that
@@ -563,4 +605,6 @@ SIM_GUIDE.md, REAL_GUIDE.md   step-by-step guides
   same numbers; changing a default means editing both.
 - `metrics_csv_path` and the PSF export directory are absolute `/workspace/...` paths, valid only
   inside the container.
-- The `just cbf-*` recipes are simulation-only; the robot uses `justfile.real`.
+- The `just cbf-*` recipes are simulation-only (Humble); the robot uses `justfile.jazzy`. The two
+  stacks share the source tree but not `build/` / `install/`: `cbf-real-build` wipes artifacts
+  built for another architecture or ROS distro.

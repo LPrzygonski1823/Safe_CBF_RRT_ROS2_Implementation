@@ -53,9 +53,10 @@ repository root.
 | `CONTROLLER` | `rpp` | Picks which `config/nav2_*_params.yaml` is mounted. |
 | `MECANUM` | `True` | Holonomic base in Gazebo. RPP itself never commands `vy`. |
 | `SAVE_MAP_PERIOD` | 15 | Map autosave, only when `SLAM=True` (set 0 to disable). |
-| `USE_SIM_TIME` | unset or `True` | Leave unset. If it is `False` (left over from robot work), the planner ignores `/clock` and its time comparisons break. |
+| `USE_SIM_TIME` | unset or `True` | Leave unset. If it is `False`, the planner ignores `/clock` and its time comparisons break. |
 
-`LIDAR_BAUDRATE` and `ROBOT_NAMESPACE` are used only on the physical robot.
+`.env` is simulation-only. The physical robot (ROS 2 Jazzy) reads `.env.real` through
+`justfile.jazzy` (`REAL_GUIDE.md`), so nothing here has to be switched when moving between them.
 
 ### 3.2 World selection
 
@@ -229,8 +230,9 @@ keeps running.
 ### 6.2 Original Husarion recipes
 
 These come from the upstream project and run the stack **without** the planner:
-`just start-simulation [gazebo|webots]`, `just restart-navigation`. Robot-side upstream recipes
-(`start-rosbot`, `flash-firmware`, `sync`, `connect-husarnet`) are described in `REAL_GUIDE.md`.
+`just start-simulation [gazebo|webots]`. The upstream recipes for the physical robot
+(`start-rosbot`, `flash-firmware`, `sync`, `connect-husarnet`, `restart-navigation`) targeted the
+Humble robot images and were removed; the robot now uses `justfile.jazzy` (`REAL_GUIDE.md`).
 
 ### 6.3 Stack inspection
 

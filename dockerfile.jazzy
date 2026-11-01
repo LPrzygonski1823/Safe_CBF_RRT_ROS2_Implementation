@@ -1,0 +1,32 @@
+FROM ros:jazzy
+
+ENV DEBIAN_FRONTEND=noninteractive
+# rosbot_description is extracted, not installed: apt install pulls rviz2 and the
+# component stack. foxglove_bridge only needs the share dir on the ament index
+# so it can serve package://rosbot_description meshes.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    python3-colcon-common-extensions \
+    ros-jazzy-rmw-cyclonedds-cpp \
+    ros-jazzy-navigation2 \
+    ros-jazzy-nav2-bringup \
+    ros-jazzy-slam-toolbox \
+    ros-jazzy-foxglove-bridge \
+    ros-jazzy-tf2-tools \
+    ros-jazzy-tf2-ros \
+    ros-jazzy-tf2-geometry-msgs \
+    ros-jazzy-nav2-msgs \
+    ros-jazzy-rclcpp-action \
+    && apt-get download ros-jazzy-rosbot-description \
+    && dpkg-deb -x ros-jazzy-rosbot-description_*.deb / \
+    && rm -f ros-jazzy-rosbot-description_*.deb \
+    && test -f /opt/ros/jazzy/share/rosbot_description/meshes/rosbot_xl/body.dae \
+    && rm -rf /var/lib/apt/lists/*
+
+ENV RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+ENV ROS_DOMAIN_ID=0
+
+RUN echo "source /opt/ros/jazzy/setup.bash" >> /root/.bashrc \
+    && echo "if [ -f /workspace/install/setup.bash ]; then source /workspace/install/setup.bash; fi" >> /root/.bashrc
+
+WORKDIR /workspace

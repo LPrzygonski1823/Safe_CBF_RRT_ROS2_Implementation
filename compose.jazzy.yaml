@@ -1,0 +1,125 @@
+# Physical ROSbot XL (snap rosbot + husarion-rplidar on the host, ROS 2 Jazzy, CycloneDDS).
+# The Gazebo simulation (Humble) is compose.simulation.yaml + compose.cbf.yaml.
+#
+# Run through justfile.jazzy; the image is built by the cbf-planner service, the others reuse it.
+
+x-ros-env: &ros-env
+  RMW_IMPLEMENTATION: rmw_cyclonedds_cpp
+  ROS_DOMAIN_ID: "0"
+
+services:
+  navigation:
+    image: ros_jazzy_cbf:latest
+    pull_policy: never
+    restart: unless-stopped
+    network_mode: host
+    depends_on:
+      - laser-tf
+    environment:
+      <<: *ros-env
+    volumes:
+      - ./config:/config:ro
+      - ./launch:/launch:ro
+      - ./maps:/maps
+    command:
+      - bash
+      - -c
+      - |
+        set -e
+        source /opt/ros/jazzy/setup.bash
+        # slam_toolbox keeps the first map it builds. Wait until cover_link -> laser
+        # exists, so that map is not started while the scan still faces backwards.
+        for _ in $(seq 1 15); do
+          if timeout 3 ros2 run tf2_ros tf2_echo cover_link laser | grep -q Translation; then
+            exec ros2 launch /launch/nav2_real.launch.py \
+              params_file:=/config/nav2_real_params.yaml \
+              slam_params_file:=/config/slam_toolbox_real.yaml \
+              use_sim_time:=False
+          fi
+        done
+        echo "cover_link -> laser was not published within 45s" >&2
+        exit 1
+
+  cbf-planner:
+    build:
+      context: .
+      dockerfile: dockerfile.jazzy
+    image: ros_jazzy_cbf:latest
+    restart: unless-stopped
+    network_mode: host
+    depends_on:
+      - navigation
+    volumes:
+      - .:/workspace
+    working_dir: /workspace
+    environment:
+      <<: *ros-env
+      USE_SIM_TIME: ${USE_SIM_TIME:-False}
+    command: bash /workspace/scripts/cbf_planner_entrypoint.sh
+
+  # Snap does not publish cover_link -> laser. Yaw π puts RPLidar angle 0 on the robot's +x.
+  laser-tf:
+    image: ros_jazzy_cbf:latest
+    pull_policy: never
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      <<: *ros-env
+    command:
+      - bash
+      - -c
+      - >-
+        source /opt/ros/jazzy/setup.bash &&
+        ros2 run tf2_ros static_transform_publisher
+        --x ${LASER_X:-0.0} --y ${LASER_Y:-0.0} --z ${LASER_Z:-0.0}
+        --roll 0.0 --pitch 0.0 --yaw ${LASER_YAW:-3.14159265}
+        --frame-id cover_link --child-frame-id laser
+
+  foxglove:
+    image: husarion/foxglove:1.84.0
+    restart: unless-stopped
+    ports:
+      - 8080:8080
+    volumes:
+      - ./config/layout.json:/foxglove/default-layout.json
+    environment:
+      - DS_TYPE=foxglove-websocket
+      - DS_PORT=8765
+      - DS_HOST=${ROBOT_IP:-localhost}
+      - UI_PORT=8080
+      - DISABLE_CACHE=true
+      - DISABLE_INTERACTION=false
+
+  foxglove-ds:
+    image: ros_jazzy_cbf:latest
+    pull_policy: never
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      <<: *ros-env
+    command:
+      - bash
+      - -c
+      - >-
+        source /opt/ros/jazzy/setup.bash &&
+        ros2 launch foxglove_bridge foxglove_bridge_launch.xml
+        port:=8765 capabilities:=[clientPublish,connectionGraph,assets]
+
+  # Foxglove Teleop panel (Twist) -> /manual/cmd_vel (TwistStamped) for twist_mux.
+  # In Foxglove set the Teleop panel topic to /manual/cmd_vel_unstamped.
+  teleop-relay:
+    image: ros_jazzy_cbf:latest
+    pull_policy: never
+    restart: unless-stopped
+    network_mode: host
+    volumes:
+      - ./scripts:/scripts:ro
+    environment:
+      <<: *ros-env
+      TELEOP_MAX_LIN: ${TELEOP_MAX_LIN:-0.3}
+      TELEOP_MAX_ANG: ${TELEOP_MAX_ANG:-1.0}
+      TELEOP_TIMEOUT: ${TELEOP_TIMEOUT:-0.5}
+    command:
+      - bash
+      - -c
+      - source /opt/ros/jazzy/setup.bash && exec python3 /scripts/teleop_relay.py

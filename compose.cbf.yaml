@@ -1,7 +1,6 @@
-# Overlay adding the Safe-CBF-RRT* planner to either stack:
-# simulation docker compose -f compose.simulation.yaml -f compose.cbf.yaml up
-# real robot docker compose -f compose.yaml -f compose.cbf.yaml up
-# Use the `just cbf-*` recipes
+# Overlay adding the Safe-CBF-RRT* planner to the Gazebo simulation (Humble):
+# docker compose -f compose.simulation.yaml -f compose.cbf.yaml up
+# Use the `just cbf-*` recipes. The physical robot (Jazzy) uses compose.jazzy.yaml.
 
 services:
 
@@ -16,6 +15,6 @@ services:
       - .:/workspace
     working_dir: /workspace
     environment:
-      # must match the Nav2 container: True in Gazebo (/clock), False on the physical robot
+      # must match the Nav2 container: True in Gazebo (/clock)
       - USE_SIM_TIME=${USE_SIM_TIME:-True}
     command: bash /workspace/scripts/cbf_planner_entrypoint.sh
