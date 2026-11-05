@@ -179,7 +179,7 @@ next to walls; in open areas it grows with the square of the local width.
 - **Edge admissibility** (`isEdgeAdmissible`): geometric collision test (robot centre on the
   inflated map, samples every half cell), then the CBF condition of equation (3) sampled every `edge_sample_step` along
   the edge: `∇h · v ≥ −κ·h`, with `v` the unit edge direction times `nominal_velocity`. Only the
-  ratio `nominal_velocity / kappa` matters: it is the approach margin in metres (0.2 m with the
+  ratio `nominal_velocity / kappa` matters: it is the approach margin in metres (0.12 m with the
   defaults). The condition is always *measured* (so the baseline also reports a rejection ratio)
   but only *enforced* when `enable_cbf: true`.
 - **Edge cost** (`edgeCost`): equation (6) as a path integral,
@@ -250,7 +250,7 @@ reports distance-to-goal and speed from the action feedback.
 | `enable_cbf` | true | `false` = plain RRT\* baseline (CBF measured but not enforced, cost = length). |
 | `kappa` | 5.0 | κ of equation (3). Larger = more permissive CBF condition. |
 | `safety_weight_c` | 0.2 | **Main experimental knob.** 1.0 = length only, 0.0 = safety only. |
-| `nominal_velocity` | 1.0 | Assumed speed along an edge when evaluating the CBF condition. Not sent to the controller (see `desired_linear_vel` in §5.2). |
+| `nominal_velocity` | 0.6 | Assumed speed along an edge when evaluating the CBF condition. Not sent to the controller (see `desired_linear_vel` in §5.2). |
 | `occupied_threshold` | 65 | Occupancy value treated as obstacle (0–100); unknown counts as occupied. |
 | `enable_smoothing` | false | Greedy shortcutting after the search. |
 | `psf_source` | constant | Source term of the Poisson equation: `centroid` (paper, equations 4–5) or `constant` (average flux, Bahati et al.). |
@@ -272,7 +272,8 @@ reports distance-to-goal and speed from the action feedback.
   `loadPlannerParams()` always overrides them from ROS parameters.
 - All parameters except `odom_topic` (read once at start-up) are re-read **on every goal**, so
   `ros2 param set /planner_node <name> <value>` takes effect immediately without a restart. This
-  is the fastest way to sweep `safety_weight_c`.
+  is the fastest way to sweep `safety_weight_c`. Ready-made commands for the planner, RPP and the
+  velocity smoother (speed, goal tolerance): `SIM_GUIDE.md` §7.3 and `REAL_GUIDE.md` §8.2.
 - Exception: `inflation`, `inflation_robot_size`, `psf_source` and `psf_boundary_flux` are
   applied when the map is frozen, because the PSF depends on them. After changing them call `/refresh_map`; until then the node keeps the
   frozen radius (for the collision check too) and warns on every goal.
@@ -294,7 +295,7 @@ tuned):
 | `rotate_to_heading_min_angle` | 0.785 | Below this heading error, normal steering corrects instead of stopping to rotate. |
 | `max_angular_accel` / `rotate_to_heading_angular_vel` | 3.2 / 1.5 | Matched to `velocity_smoother` limits (`max_accel[2]`, `max_velocity[2]`). |
 | `movement_time_allowance` | 30.0 | Rotating in place produces no translation, so the progress checker needs slack. |
-| `desired_linear_vel` | 1.0 | Cruise speed requested by RPP. `velocity_smoother` caps it at 0.5 m/s (`max_velocity[0]`). |
+| `desired_linear_vel` | 0.6 | Cruise speed, equal to `velocity_smoother` `max_velocity[0]` and to the planner's `nominal_velocity`. |
 | `xy_goal_tolerance` / `yaw_goal_tolerance` | 0.1 / 0.3 | Goal checker acceptance. |
 | `use_collision_detection` | false | RPP does **not** stop for obstacles in the local costmap. |
 
@@ -302,7 +303,7 @@ tuned):
 the original Husarion project.
 
 The physical robot uses `config/nav2_real_params.yaml` (RPP with the same lookahead, but
-`desired_linear_vel` 0.2 m/s, `velocity_smoother` limit 0.3 m/s / 1.0 rad/s, stamped velocity
+`desired_linear_vel` 0.6 m/s as in simulation, `velocity_smoother` limit 0.6 m/s / 1.0 rad/s, stamped velocity
 output for `twist_mux`) and `config/slam_toolbox_real.yaml`. Both are described in
 `REAL_GUIDE.md` §2.2.
 
@@ -585,8 +586,10 @@ SIM_GUIDE.md, REAL_GUIDE.md   step-by-step guides
   is under-used. `velocity_smoother` also caps `vy` at 0.
 - RPP has `use_collision_detection: false` and does not know `h`: nothing in the chain stops the
   robot for an obstacle missing from the frozen map. It also cuts corners at sharp path turns.
-- `nominal_velocity` (1.0 m/s) differs from the actual cruise speed: at most 0.5 m/s in
-  simulation (`velocity_smoother` cap) and 0.2 m/s on the robot.
+- `nominal_velocity`, RPP `desired_linear_vel` and the `velocity_smoother` limit are all 0.6 m/s,
+  in simulation and on the robot. This is the cruise speed: RPP still slows down in tight turns
+  (`use_regulated_linear_velocity_scaling`), near the goal and while rotating in place, so the
+  speed along an edge can be lower than the one assumed by the CBF condition.
 - On the robot, slam_toolbox always runs in mapping mode and there is no map loading or AMCL:
   every restart of `navigation` starts a new map with a new origin, so a saved robot map is a
   record and benchmark input, not something the robot can localise in again.

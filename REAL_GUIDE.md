@@ -82,8 +82,8 @@ two never need to be switched.
 
 | Parameter | Value | Notes |
 |---|---|---|
-| `FollowPath.desired_linear_vel` | 0.2 | Cruise speed. Raise it after the first successful runs. |
-| `velocity_smoother.max_velocity` | `[0.3, 0.0, 1.0]` | Hard limit on what reaches `twist_mux`. |
+| `FollowPath.desired_linear_vel` | 0.6 | Cruise speed, equal to the planner's `nominal_velocity` and to the simulation. |
+| `velocity_smoother.max_velocity` | `[0.6, 0.0, 1.0]` | Hard limit on what reaches `twist_mux`. |
 | `lookahead_dist` (min / max) | 0.6 (0.3 / 0.9) | As in the simulation. |
 | `xy_goal_tolerance` / `yaw_goal_tolerance` | 0.10 / 0.30 | Goal checker acceptance. |
 | `use_collision_detection` | false | RPP does **not** stop for obstacles (§6.2). |
@@ -105,9 +105,10 @@ table in `README.md` §5.1). All except `odom_topic` are re-read on every goal, 
 
 On the robot, keep in mind:
 
-- `nominal_velocity` (default `1.0`) is the speed **assumed** by the CBF condition. RPP actually
-  drives at `desired_linear_vel = 0.2` m/s here. The CBF margin is therefore computed for faster
-  motion than the robot performs.
+- `nominal_velocity` (default `0.6`) is the speed **assumed** by the CBF condition. It matches
+  RPP's `desired_linear_vel` and the `velocity_smoother` limit (0.6 m/s). It does not change the
+  driving speed: that is set by `desired_linear_vel` (§8.2). RPP does not stop for obstacles
+  (§6.2), so keep a clear area and the power switch within reach.
 - Data written by the node (`planning_metrics.csv`, `h.csv`, `u_x.csv`, `u_y.csv`) goes to
   `src/cbf_rrt_planner/maps/psf_debug/` **on the robot**.
 
@@ -411,7 +412,7 @@ planner, set `free_thresh: 0.19` in the copied `map.yaml`.
    Keep the robot runs for what the benchmark cannot measure: tracking, localisation and the
    real distance to obstacles.
 
-### 8.2 Changing parameters between runs [robot]
+### 8.2 Changing parameters without a restart [robot]
 
 Open a shell (the ROS environment is sourced by the image's `.bashrc`):
 
@@ -419,36 +420,53 @@ Open a shell (the ROS environment is sourced by the image's `.bashrc`):
 just -f justfile.jazzy cbf-real-shell
 ```
 
-Then, for example:
+`ros2 param set` changes a parameter of a running node. The value is lost when that node's
+container is recreated: `cbf-planner` for `/planner_node`, `navigation` for `/controller_server`
+and `/velocity_smoother`. To make a value permanent, edit the YAML on the laptop, sync and
+restart the container (§3). Read a value back with `ros2 param get <node> <name>`, or all of them
+with `ros2 param dump <node>`.
 
-```bash
-# plain RRT* baseline: the CBF condition is measured but not enforced, cost = length
-ros2 param set /planner_node enable_cbf false
+**Planner (`/planner_node`).** Applied from the next goal. Defaults from
+`src/cbf_rrt_planner/config/cbf_rrt_planner.yaml`.
 
-# Safe-CBF-RRT* with a given safety weight (1.0 = length only, 0.0 = safety only)
-ros2 param set /planner_node enable_cbf true
-ros2 param set /planner_node safety_weight_c 0.5
+| Command | Default | Effect |
+|---|---|---|
+| `ros2 param set /planner_node safety_weight_c 0.5` | 0.2 | `c` of equation (6): trade-off between length and safety. 1.0 = length only, 0.0 = safety only. Sweep separately for each `psf_source` (`README.md` §6). |
+| `ros2 param set /planner_node enable_cbf false` | true | `false` = plain RRT\* baseline: the CBF condition is measured but not enforced, cost = length. The PSF must already be generated, otherwise `mean_h`, `min_h` and `rejection_ratio` stay empty. |
+| `ros2 param set /planner_node kappa 3.0` | 5.0 | κ of the CBF condition. Larger = more permissive. Only `nominal_velocity / kappa` matters: the approach margin in metres (0.12 m by default). |
+| `ros2 param set /planner_node nominal_velocity 0.6` | 0.6 | Speed **assumed** by the CBF condition. Does not change the driving speed (use `FollowPath.desired_linear_vel` below). |
+| `ros2 param set /planner_node goal_tolerance 0.5` | 1.0 | Radius [m] within which a tree node may connect to the goal. Smaller = less of a kink at the end, but more iterations needed. Does not change where the robot stops (`xy_goal_tolerance` below). |
+| `ros2 param set /planner_node max_iterations 20000` | 10000 | RRT\* budget, always fully spent: planning time grows with it. Raise after `Planning FAILED`. |
+| `ros2 param set /planner_node step_size 0.5` | 1.0 | Max edge length [m]. Smaller = finer paths, needs more iterations. |
+| `ros2 param set /planner_node seed 7` | -1 | `>= 0` = the same start/goal gives the same path; `-1` = different every plan. |
+| `ros2 param set /planner_node enable_smoothing true` | false | Greedy shortcutting after the search. |
 
-# CBF strictness: only the ratio nominal_velocity / kappa matters (approach margin in metres)
-ros2 param set /planner_node kappa 5.0
-ros2 param set /planner_node nominal_velocity 0.2
+These are frozen with the map and apply only after `cbf-real-refresh-map` (until then the planner
+warns on every goal):
 
-ros2 param get /planner_node safety_weight_c
+| Command | Default | Effect |
+|---|---|---|
+| `ros2 param set /planner_node psf_source centroid` | constant | Source term of the PSF: `constant` or `centroid`. |
+| `ros2 param set /planner_node psf_boundary_flux 2.0` | 1.0 | `constant` only: slope of `h` next to walls. |
+| `ros2 param set /planner_node inflation_robot_size 0.26` | 0.22 | Inflation radius [m]. Add a margin on the robot (0.25–0.27). |
+| `ros2 param set /planner_node inflation false` | true | Point robot, as in the paper. |
 
-# PSF source and inflation are frozen with the map: run cbf-real-refresh-map afterwards
-ros2 param set /planner_node psf_source constant      # or: centroid
-ros2 param set /planner_node inflation_robot_size 0.26
-```
+**Controller and velocity smoother (`navigation` container).** Applied immediately, also to a
+path that is being driven. Defaults from `config/nav2_real_params.yaml`.
 
-`safety_weight_c` weights safety differently for each PSF source, so sweep `c` separately for
-`centroid` and `constant` (see `README.md` §6).
-
-The values apply from the next goal. They are lost when the planner container is recreated. To
-make them permanent, edit `src/cbf_rrt_planner/config/cbf_rrt_planner.yaml` on the laptop, sync
-and run `cbf-real-restart`.
-
-For the baseline, the PSF must already be generated, otherwise the `mean_h`, `min_h` and
-`rejection_ratio` columns stay empty.
+| Command | Default | Effect |
+|---|---|---|
+| `ros2 param set /controller_server FollowPath.desired_linear_vel 0.4` | 0.6 | **Driving speed** [m/s] on straight segments. Keep it ≤ `max_velocity[0]` of the smoother. |
+| `ros2 param set /velocity_smoother max_velocity "[0.4, 0.0, 1.0]"` | `[0.6, 0.0, 1.0]` | Hard limit on `vx`, `vy`, `ωz` sent to `twist_mux`. Give all three values with a decimal point. |
+| `ros2 param set /velocity_smoother min_velocity "[-0.4, 0.0, -1.0]"` | `[-0.6, 0.0, -1.0]` | Lower limit; keep it symmetric to `max_velocity`. |
+| `ros2 param set /velocity_smoother max_accel "[0.5, 0.0, 2.0]"` | `[1.0, 0.0, 2.0]` | Acceleration limit; lower = gentler start. |
+| `ros2 param set /velocity_smoother max_decel "[-0.5, 0.0, -2.0]"` | `[-1.0, 0.0, -2.0]` | Deceleration limit (negative); lower magnitude = longer braking. |
+| `ros2 param set /controller_server FollowPath.rotate_to_heading_angular_vel 0.6` | 1.0 | Speed [rad/s] of rotation in place before driving off. Keep it ≤ `max_velocity[2]`. |
+| `ros2 param set /controller_server FollowPath.regulated_linear_scaling_min_radius 0.5` | 0.9 | RPP slows down on arcs tighter than this radius [m]. Smaller = less slowdown in turns. |
+| `ros2 param set /controller_server FollowPath.approach_velocity_scaling_dist 0.3` | 0.6 | Distance [m] before the end of the path at which RPP starts slowing down. |
+| `ros2 param set /controller_server FollowPath.lookahead_dist 0.8` | 0.6 | Pure-pursuit carrot distance [m]. Larger = smoother but cuts corners more. |
+| `ros2 param set /controller_server general_goal_checker.xy_goal_tolerance 0.2` | 0.10 | How close [m] to the end of the path the robot must stop. |
+| `ros2 param set /controller_server general_goal_checker.yaw_goal_tolerance 0.5` | 0.30 | Accepted heading error [rad] at the end. |
 
 ### 8.3 Metrics
 

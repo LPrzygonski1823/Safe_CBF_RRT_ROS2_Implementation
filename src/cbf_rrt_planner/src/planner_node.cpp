@@ -119,7 +119,7 @@ private:
     this->declare_parameter<bool>("enable_cbf", true);
     this->declare_parameter<double>("kappa", 5.0);
     this->declare_parameter<double>("safety_weight_c", 0.2);
-    this->declare_parameter<double>("nominal_velocity", 1.0);
+    this->declare_parameter<double>("nominal_velocity", 0.6);
     this->declare_parameter<int>("occupied_threshold", 65);
     this->declare_parameter<bool>("enable_smoothing", false);
 

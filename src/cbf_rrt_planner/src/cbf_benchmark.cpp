@@ -132,7 +132,7 @@ public:
       {"step_size", "1.0"}, {"max_iterations", "10000"}, {"goal_bias", "0.05"},
       {"goal_tolerance", "1.0"}, {"neighbor_radius", "5.0"}, {"gamma", "5.0"},
       {"enable_cbf", "true"}, {"kappa", "5.0"}, {"safety_weight_c", "0.2"},
-      {"nominal_velocity", "1.0"}, {"occupied_threshold", "65"}, {"enable_smoothing", "false"},
+      {"nominal_velocity", "0.6"}, {"occupied_threshold", "65"}, {"enable_smoothing", "false"},
       {"inflation", "true"}, {"inflation_robot_size", "0.22"},
       {"psf_source", "centroid"}, {"psf_boundary_flux", "1.0"},
       {"footprint_length", "0.33"}, {"footprint_width", "0.28"}, {"clearance_search_radius", "2.0"},

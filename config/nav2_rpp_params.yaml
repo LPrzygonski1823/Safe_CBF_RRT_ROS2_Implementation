@@ -151,7 +151,7 @@ controller_server:
       plugin: nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController
 
       # Velocity/acceleration limits also have to be adjusted in the velocity smoother
-      desired_linear_vel: 1.0
+      desired_linear_vel: 0.6
       # pure pursuit curvature is 2*y/L^2, so a short lookahead turns a small lateral error into
       # a huge steering command. 0.6 is the Nav2 default
       lookahead_dist: 0.6
@@ -474,8 +474,9 @@ velocity_smoother:
     smoothing_frequency: 5.0
     scale_velocities: false
     feedback: OPEN_LOOP
-    max_velocity: [0.5, 0.0, 1.5]   # Measured: MAX[1.0, 0.0, 3.14] (decreased for safety)
-    min_velocity: [-0.5, 0.0, -1.5] # Measured: MAX[1.0, 0.0, 3.14] (decreased for safety)
+    # linear limit = desired_linear_vel (0.6 m/s)
+    max_velocity: [0.6, 0.0, 1.5]   # Measured: MAX[1.0, 0.0, 3.14] (decreased for safety)
+    min_velocity: [-0.6, 0.0, -1.5] # Measured: MAX[1.0, 0.0, 3.14] (decreased for safety)
     max_accel: [1.0, 0.0, 3.2]
     max_decel: [-1.0, 0.0, -3.2]  # Measured
     # used in the CLOSED_LOOP feedback mode

@@ -14,7 +14,7 @@ planner_node:
     enable_cbf: true
     kappa: 5.0
     safety_weight_c: 0.2
-    nominal_velocity: 1.0
+    nominal_velocity: 0.6
     occupied_threshold: 65
     enable_smoothing: false
 
