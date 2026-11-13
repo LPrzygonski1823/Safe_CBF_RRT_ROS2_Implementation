@@ -221,6 +221,7 @@ in the same place and orientation as during mapping.
 | `just cbf-goal X Y` | Send a planning goal, e.g. `just cbf-goal 2.5 -1.0`. |
 | `just cbf-benchmark [OPTIONS]` | Offline benchmark of the planner core, no simulation needed (`--help` lists the options; `README.md` §6.2). |
 | `just cbf-benchmark-plot [RESULTS] [OPTIONS]` | Plots and summary of the benchmark results, on the host (`README.md` §6.3). |
+| `just cbf-exp NAME` / `just cbf-exp-analyze H` | Experiments of the thesis hypotheses and their verdicts (`README_EXPERIMENTS.md`). |
 | `just cbf-logs` | Follow the planner logs. |
 | `just cbf-shell` | Interactive ROS 2 shell on the stack network. |
 | `just cbf-down` | Stop the whole stack. |

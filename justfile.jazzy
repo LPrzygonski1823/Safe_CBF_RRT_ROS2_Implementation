@@ -132,6 +132,14 @@ cbf-real-nav-logs: _run-as-user
     #!/bin/bash
     {{compose}} logs -f navigation
 
+# [robot] experiment H4 of README_EXPERIMENTS.md: PSF and planning times on the onboard computer
+cbf-real-exp-h4 map="maps/map.yaml" *args: cbf-real-build _run-as-user
+    #!/bin/bash
+    set -e
+    {{compose}} run --rm --no-deps -e TAG=robot cbf-planner bash -c "\
+        source /opt/ros/\$ROS_DISTRO/setup.bash && source /workspace/install/setup.bash && \
+        bash src/cbf_rrt_planner/tools/run_experiment.sh h4 --map {{map}} {{args}}"
+
 # interactive ROS 2 shell
 cbf-real-shell: _run-as-user
     #!/bin/bash

@@ -106,6 +106,19 @@ cbf-benchmark *args: cbf-build _run-as-user
 cbf-benchmark-plot results="src/cbf_rrt_planner/benchmark/results.csv" *args:
     python3 src/cbf_rrt_planner/tools/plot_benchmark.py {{results}} {{args}}
 
+# GOALS / RUNS from the environment override the defaults (20 / 10)
+# run one experiment of README_EXPERIMENTS.md offline (h1h2, h3, h4), e.g. `just cbf-exp h3`
+cbf-exp name *args: cbf-build _run-as-user
+    #!/bin/bash
+    set -e
+    {{compose_cbf}} run --rm --no-deps -e GOALS -e RUNS -e TAG cbf-planner bash -c "\
+        source /opt/ros/humble/setup.bash && source /workspace/install/setup.bash && \
+        bash src/cbf_rrt_planner/tools/run_experiment.sh {{name}} {{args}}"
+
+# verdict, table and figure of one hypothesis (h1, h2, h3, h4), on the host (numpy, matplotlib)
+cbf-exp-analyze name *args:
+    python3 src/cbf_rrt_planner/tools/analyze_experiments.py {{name}} {{args}}
+
 # interactive ROS 2 shell on the stack network (ros2 topic/node/tf debugging)
 cbf-shell: _run-as-user
     #!/bin/bash

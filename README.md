@@ -51,6 +51,9 @@ just cbf-benchmark --random-goals 20 --runs 30 --c 0.2,0.5,0.8 --baseline
 just cbf-benchmark-plot    # plots + summary in src/cbf_rrt_planner/benchmark/plots/
 ```
 
+The experiments for the thesis hypotheses (H1-H4), with commands and decision rules, are in
+`README_EXPERIMENTS.md`.
+
 Foxglove runs at `http://localhost:8080` in simulation. On the robot, connect the Foxglove desktop
 app to `ws://ROBOT_IP:8765` (a web UI is also served at `http://ROBOT_IP:8080`).
 
@@ -440,11 +443,11 @@ Main columns of `results.csv`:
 | Group | Columns |
 |---|---|
 | Identification | `batch` (timestamp of the invocation), `tag` (`--tag`), `map`, `run` (row id in the batch, key into `_paths.csv`), `seed` |
-| Frozen setup | `psf_source`, `psf_boundary_flux`, `inflation_radius`, `kappa`, `nominal_velocity`, `max_iterations`, `smoothing` |
+| Frozen setup | `psf_source`, `psf_boundary_flux`, `inflation_radius`, `kappa`, `nominal_velocity`, `max_iterations`, `step_size`, `gamma`, `neighbor_radius`, `goal_bias`, `goal_tolerance`, `smoothing` |
 | Configuration | `config` (`cbf` / `baseline`), `enable_cbf`, `safety_weight_c` (`nan` for the baseline) |
-| Query | `goal_id`, `start_x`, `start_y`, `goal_x`, `goal_y`, `straight_dist` |
+| Query | `goal_id`, `start_x`, `start_y`, `goal_x`, `goal_y`, `goal_clearance` (goal to the nearest obstacle of the map without inflation, capped at `clearance_search_radius`), `straight_dist` |
 | Result | `success`, `failure` (`none` / `start_blocked` / `goal_blocked` / `no_path`), `length`, `length_ratio` = `length / straight_dist`, `mean_h`, `min_h`, `min_clearance`, `mean_clearance`, `min_footprint_clearance`, iteration and rejection columns as in §6.1 |
-| Timing | `plan_time_s` (search + smoothing), `psf_time_s` (once per batch) |
+| Timing | `plan_time_s` (search + smoothing), `psf_time_s` (once per batch, median of `--psf-repeats`) |
 
 Running it:
 
@@ -459,7 +462,12 @@ just cbf-benchmark --help
 `just cbf-benchmark` builds the workspace and runs the binary in the dev container. The
 simulation does not have to be running. All batches append to the same file. The same
 `--goal-seed` (default 1) on the same map draws the same goals, so batches with different
-PSF sources or inflation can be compared goal by goal.
+PSF sources can be compared goal by goal. Goals are drawn on the inflated map, so batches with
+different inflation get the same goals only with the same `--goal-inflation R`.
+`--goal-clearance MIN,MAX` keeps only goals at that distance from the nearest obstacle,
+`--baseline-only` runs plain RRT\* alone and `--psf-repeats N` records the median of `N` PSF
+generations. The experiments that verify the thesis hypotheses are built from these options
+and described step by step in `README_EXPERIMENTS.md`.
 
 One plan takes about 0.5 s on a laptop with the default 10 000 iterations. The PSF takes about
 1.3 s (constant source) or about 4.6 s (centroid source). 20 goals × 30 seeds × 4

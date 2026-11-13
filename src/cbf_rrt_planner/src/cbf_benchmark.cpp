@@ -41,10 +41,16 @@ const char * kUsage =
   "  --set KEY=VALUE     override one planner parameter, repeatable (e.g. --set psf_source=centroid)\n"
   "  --c LIST            comma-separated safety_weight_c values (default: the value from --params)\n"
   "  --baseline          also run plain RRT* (enable_cbf=false) with the same goals and seeds\n"
+  "  --baseline-only     run plain RRT* only (no Safe-CBF-RRT* configuration)\n"
   "  --goals FILE        goals, one 'x,y' per line ('#' comments allowed)\n"
   "  --random-goals N    draw N reachable goals instead (default 10 when --goals is not given)\n"
   "  --goal-seed S       seed of the goal draw (default 1)\n"
   "  --min-goal-dist D   minimum straight-line start-goal distance of drawn goals [m] (default 2.0)\n"
+  "  --goal-inflation R  draw the goals on the map inflated by R [m] instead of the planning\n"
+  "                      inflation, so batches with different inflation get the same goals\n"
+  "  --goal-clearance MIN,MAX  keep only drawn goals whose distance to the nearest obstacle of\n"
+  "                      the map without inflation is in [MIN, MAX] [m]\n"
+  "  --psf-repeats N     generate the PSF N times and record the median time (default 1)\n"
   "  --runs N            planner seeds per goal and configuration (default 10)\n"
   "  --seed S            first planner seed (default 1)\n"
   "  --start X,Y         start position in map coordinates (default 0,0)\n"
@@ -59,10 +65,15 @@ struct Options
   std::vector<std::pair<std::string, std::string>> overrides;
   std::vector<double> c_values;
   bool baseline = false;
+  bool baseline_only = false;
   std::string goals_path;
   int random_goals = 10;
   unsigned goal_seed = 1;
   double min_goal_dist = 2.0;
+  double goal_inflation = -1.0;  // < 0: the planning inflation
+  double goal_clearance_min = -1.0;  // < 0: no clearance filter
+  double goal_clearance_max = -1.0;
+  int psf_repeats = 1;
   int runs = 10;
   long seed = 1;
   double start_x = 0.0;
@@ -101,10 +112,21 @@ Options parseArgs(int argc, char ** argv)
     }
     else if (a == "--c") {o.c_values = parseList(next());}
     else if (a == "--baseline") {o.baseline = true;}
+    else if (a == "--baseline-only") {o.baseline_only = true;}
     else if (a == "--goals") {o.goals_path = next();}
     else if (a == "--random-goals") {o.random_goals = std::stoi(next());}
     else if (a == "--goal-seed") {o.goal_seed = static_cast<unsigned>(std::stoul(next()));}
     else if (a == "--min-goal-dist") {o.min_goal_dist = std::stod(next());}
+    else if (a == "--goal-inflation") {o.goal_inflation = std::stod(next());}
+    else if (a == "--goal-clearance") {
+      auto band = parseList(next());
+      if (band.size() != 2 || band[0] < 0.0 || band[1] < band[0]) {
+        throw std::runtime_error("--goal-clearance expects MIN,MAX with 0 <= MIN <= MAX");
+      }
+      o.goal_clearance_min = band[0];
+      o.goal_clearance_max = band[1];
+    }
+    else if (a == "--psf-repeats") {o.psf_repeats = std::stoi(next());}
     else if (a == "--runs") {o.runs = std::stoi(next());}
     else if (a == "--seed") {o.seed = std::stol(next());}
     else if (a == "--start") {
@@ -119,6 +141,7 @@ Options parseArgs(int argc, char ** argv)
     else {throw std::runtime_error("unknown option '" + a + "'");}
   }
   if (o.runs < 1) {throw std::runtime_error("--runs must be >= 1");}
+  if (o.psf_repeats < 1) {throw std::runtime_error("--psf-repeats must be >= 1");}
   return o;
 }
 
@@ -189,17 +212,31 @@ std::vector<std::pair<double, double>> readGoals(const std::string & path)
   return goals;
 }
 
-// goals are drawn from the free cells of the inflated map that are 4-connected to the start, so
-// a failure always means the planner did not find an existing path
+// distance from a point to the nearest obstacle cell of the map without inflation [m]
+double pointClearance(const OccupancyGridData & raw_map, double x, double y, const ClearanceParams & p)
+{
+  return computePathClearance(raw_map, {{x, y}}, p).min_clearance;
+}
+
+// goals are drawn from the free cells of 'map' (inflated) that are 4-connected to the start, so a
+// failure on a map with the same inflation always means the planner did not find an existing path.
+// with clear_min >= 0 only cells whose clearance on 'raw_map' is in [clear_min, clear_max] are kept
 std::vector<std::pair<double, double>> drawGoals(
-  const OccupancyGridData & map, int threshold, double sx, double sy,
-  int count, double min_dist, unsigned seed)
+  const OccupancyGridData & map, const OccupancyGridData & raw_map, int threshold,
+  double sx, double sy, int count, double min_dist, unsigned seed,
+  double clear_min, double clear_max, ClearanceParams clearance_params)
 {
   const int W = map.width;
   const int H = map.height;
   const double res = map.resolution;
   const int c0 = static_cast<int>(std::floor((sx - map.origin_x) / res));
   const int r0 = static_cast<int>(std::floor((sy - map.origin_y) / res));
+  if (r0 < 0 || r0 >= H || c0 < 0 || c0 >= W ||
+    !isFreeValue(map.data[static_cast<size_t>(r0) * W + c0], threshold))
+  {
+    throw std::runtime_error("the start is not free on the map the goals are drawn on - "
+                             "lower --goal-inflation or pick another --start");
+  }
 
   std::vector<char> seen(static_cast<size_t>(W) * H, 0);
   std::vector<std::pair<double, double>> candidates;
@@ -227,13 +264,24 @@ std::vector<std::pair<double, double>> drawGoals(
 
   std::mt19937 rng(seed);
   std::shuffle(candidates.begin(), candidates.end(), rng);
-  if (static_cast<int>(candidates.size()) < count) {
-    std::cerr << "warning: only " << candidates.size() << " reachable goal cells farther than "
-              << min_dist << " m from the start\n";
-    count = static_cast<int>(candidates.size());
+
+  // only the band matters, so the brute-force clearance search can stop just past its upper end
+  clearance_params.search_radius = clear_max + res;
+  std::vector<std::pair<double, double>> goals;
+  for (const auto & [x, y] : candidates) {
+    if (static_cast<int>(goals.size()) == count) {break;}
+    if (clear_min >= 0.0) {
+      double cl = pointClearance(raw_map, x, y, clearance_params);
+      if (cl < clear_min || cl > clear_max) {continue;}
+    }
+    goals.emplace_back(x, y);
   }
-  candidates.resize(count);
-  return candidates;
+  if (static_cast<int>(goals.size()) < count) {
+    std::cerr << "warning: only " << goals.size() << " reachable goal cells farther than "
+              << min_dist << " m from the start" << (clear_min >= 0.0 ? " in the clearance band" : "")
+              << "\n";
+  }
+  return goals;
 }
 
 const char * failureName(PlanningFailure f)
@@ -298,32 +346,55 @@ int run(const Options & opt)
     return 2;
   }
 
+  // every repeat starts from a fresh generator, so no run reuses the state of the previous one
   PSFGenerator psf;
-  psf.setOccupiedThreshold(threshold);
-  psf.setSource(
-    source_name == "constant" ? PsfSource::Constant : PsfSource::Centroid,
-    P.d("psf_boundary_flux"));
-  auto t_psf = std::chrono::steady_clock::now();
-  psf.generate(planning_map);
-  double psf_time = std::chrono::duration<double>(std::chrono::steady_clock::now() - t_psf).count();
-  std::cout << "PSF '" << source_name << "' ready in " << psf_time << " s ("
-            << psf.obstacleCount() << " obstacles";
+  std::vector<double> psf_times;
+  for (int k = 0; k < opt.psf_repeats; ++k) {
+    psf = PSFGenerator();
+    psf.setOccupiedThreshold(threshold);
+    psf.setSource(
+      source_name == "constant" ? PsfSource::Constant : PsfSource::Centroid,
+      P.d("psf_boundary_flux"));
+    auto t_psf = std::chrono::steady_clock::now();
+    psf.generate(planning_map);
+    psf_times.push_back(std::chrono::duration<double>(std::chrono::steady_clock::now() - t_psf).count());
+  }
+  const double psf_time = median(psf_times);
+  std::cout << "PSF '" << source_name << "' ready in " << psf_time << " s";
+  if (opt.psf_repeats > 1) {std::cout << " (median of " << opt.psf_repeats << " runs)";}
+  std::cout << " (" << psf.obstacleCount() << " obstacles";
   if (psf.source() == PsfSource::Constant) {std::cout << ", f0 = " << psf.constantSource() << " 1/m";}
   std::cout << ")\n";
 
+  ClearanceParams clearance_params;
+  clearance_params.footprint_length = P.d("footprint_length");
+  clearance_params.footprint_width = P.d("footprint_width");
+  clearance_params.search_radius = P.d("clearance_search_radius");
+  clearance_params.sample_step = raw_map.resolution;
+  clearance_params.occupied_threshold = threshold;
+
+  const double goal_inflation = opt.goal_inflation >= 0.0 ? opt.goal_inflation : inflation_radius;
   auto goals = opt.goals_path.empty() ?
-    drawGoals(planning_map, threshold, opt.start_x, opt.start_y,
-              opt.random_goals, opt.min_goal_dist, opt.goal_seed) :
+    drawGoals(goal_inflation == inflation_radius ? planning_map :
+              inflateObstacles(raw_map, goal_inflation, threshold),
+              raw_map, threshold, opt.start_x, opt.start_y,
+              opt.random_goals, opt.min_goal_dist, opt.goal_seed,
+              opt.goal_clearance_min, opt.goal_clearance_max, clearance_params) :
     readGoals(opt.goals_path);
+  std::vector<double> goal_clearances;
   for (size_t g = 0; g < goals.size(); ++g) {
-    std::printf("goal %zu: %.3f, %.3f\n", g, goals[g].first, goals[g].second);
+    goal_clearances.push_back(pointClearance(raw_map, goals[g].first, goals[g].second, clearance_params));
+    std::printf("goal %zu: %.3f, %.3f (%.2f m from the nearest obstacle)\n",
+                g, goals[g].first, goals[g].second, goal_clearances[g]);
   }
 
   std::vector<Config> configs;
-  std::vector<double> c_values = opt.c_values.empty() ?
-    std::vector<double>{P.d("safety_weight_c")} : opt.c_values;
-  for (double c : c_values) {configs.push_back({"cbf", true, c});}
-  if (opt.baseline) {configs.push_back({"baseline", false, std::nan("")});}
+  if (!opt.baseline_only) {
+    std::vector<double> c_values = opt.c_values.empty() ?
+      std::vector<double>{P.d("safety_weight_c")} : opt.c_values;
+    for (double c : c_values) {configs.push_back({"cbf", true, c});}
+  }
+  if (opt.baseline || opt.baseline_only) {configs.push_back({"baseline", false, std::nan("")});}
 
   PlannerParams base;
   base.step_size = P.d("step_size");
@@ -337,13 +408,6 @@ int run(const Options & opt)
   base.nominal_velocity = P.d("nominal_velocity");
   base.occupied_threshold = threshold;
 
-  ClearanceParams clearance_params;
-  clearance_params.footprint_length = P.d("footprint_length");
-  clearance_params.footprint_width = P.d("footprint_width");
-  clearance_params.search_radius = P.d("clearance_search_radius");
-  clearance_params.sample_step = raw_map.resolution;
-  clearance_params.occupied_threshold = threshold;
-
   namespace fs = std::filesystem;
   fs::path out(opt.out_path);
   std::string paths_path =
@@ -352,7 +416,8 @@ int run(const Options & opt)
   std::ofstream rows = openCsvForAppend(
     opt.out_path,
     "batch,tag,map,psf_source,psf_boundary_flux,inflation_radius,kappa,nominal_velocity,"
-    "max_iterations,smoothing,config,enable_cbf,safety_weight_c,goal_id,start_x,start_y,goal_x,goal_y,"
+    "max_iterations,step_size,gamma,neighbor_radius,goal_bias,goal_tolerance,smoothing,"
+    "config,enable_cbf,safety_weight_c,goal_id,start_x,start_y,goal_x,goal_y,goal_clearance,"
     "straight_dist,run,seed,success,failure,length,length_ratio,mean_h,min_h,min_clearance,"
     "mean_clearance,min_footprint_clearance,iterations_used,iterations_to_first_solution,"
     "cbf_candidates,cbf_rejections,rejection_ratio,plan_time_s,psf_time_s");
@@ -408,9 +473,12 @@ int run(const Options & opt)
         const double nan = std::nan("");
         rows << batch << "," << opt.tag << "," << map_name << "," << source_name << ","
              << P.d("psf_boundary_flux") << "," << inflation_radius << "," << params.kappa << ","
-             << params.nominal_velocity << "," << params.max_iterations << "," << (smoothing ? 1 : 0) << ","
+             << params.nominal_velocity << "," << params.max_iterations << ","
+             << params.step_size << "," << params.gamma << "," << params.neighbor_radius << ","
+             << params.goal_bias << "," << params.goal_tolerance << "," << (smoothing ? 1 : 0) << ","
              << cfg.name << "," << (cfg.enable_cbf ? 1 : 0) << "," << cfg.c << ","
              << g << "," << opt.start_x << "," << opt.start_y << "," << gx << "," << gy << ","
+             << goal_clearances[g] << ","
              << straight << "," << run_id << "," << seed << ","
              << (result.success ? 1 : 0) << "," << failureName(result.failure) << ","
              << (result.success ? result.total_length : nan) << ","
