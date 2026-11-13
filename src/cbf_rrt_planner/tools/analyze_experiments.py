@@ -6,9 +6,12 @@ Verdicts, tables and figures of the experiments in README_EXPERIMENTS.md.
     python3 src/cbf_rrt_planner/tools/analyze_experiments.py h2 [CSV] [--tol 0.02] [--min-speedup 3.0]
     python3 src/cbf_rrt_planner/tools/analyze_experiments.py h3 [CSV] [--significant 0.25]
     python3 src/cbf_rrt_planner/tools/analyze_experiments.py h4 [CSV] [--limit 1.0]
+    python3 src/cbf_rrt_planner/tools/analyze_experiments.py ablation [CSV] [--c 0.8]
+    python3 src/cbf_rrt_planner/tools/analyze_experiments.py psf [DIR] [--maps-dir maps]
 
-CSV defaults to src/cbf_rrt_planner/benchmark/experiments/h1h2.csv (h1, h2), h3.csv or h4.csv.
-The figure (h1.png, h2.png, h3.png) is written next to the CSV. h1-h3 need numpy and matplotlib;
+CSV defaults to src/cbf_rrt_planner/benchmark/experiments/h1h2.csv (h1, h2), h3.csv, h4.csv or
+ablation.csv; DIR of psf to experiments/psf. The figure (h1.png, h2.png, h3.png, ablation.png,
+psf_<map>.png) is written next to the input. All commands except h4 need numpy and matplotlib;
 h4 needs only the standard library, so it also runs on the robot.
 
 All statistics are medians over successful plans. A Safe-CBF-RRT* plan is paired with the plain
@@ -20,10 +23,11 @@ import csv
 import math
 import os
 import statistics
+import sys
 
 EXP_DIR = os.path.join("src", "cbf_rrt_planner", "benchmark", "experiments")
-FLOATS = ["inflation_radius", "safety_weight_c", "length", "min_footprint_clearance",
-          "plan_time_s", "psf_time_s"]
+FLOATS = ["inflation_radius", "safety_weight_c", "kappa", "length", "min_footprint_clearance",
+          "rejection_ratio", "plan_time_s", "psf_time_s"]
 COLORS = {"constant": "tab:blue", "centroid": "tab:orange"}
 
 
@@ -281,6 +285,187 @@ def h4(args):
         print(f"-> H4 on {tag}: {verdict(ok)} (limit {args.limit} s)")
 
 
+# ---------------------------------------------------------------------------------------------
+# ablation (Section 5.3.2): which of the two mechanisms produces the clearance
+
+ABLATION = {
+    "baseline": "plain RRT*",
+    "cbf_only": "CBF condition only (c = 1)",
+    "cost_only": "cost term only (kappa = 1e6)",
+    "full": "Safe-CBF-RRT* (both)",
+}
+
+
+def variant(r, c):
+    if r["config"] == "baseline":
+        return "baseline"
+    if r["safety_weight_c"] == 1.0:
+        return "cbf_only"
+    if r["safety_weight_c"] == c:
+        return "cost_only" if r["kappa"] >= 1e5 else "full"
+    return None
+
+
+def same_path(a, b):
+    """share of the plans of 'a' with the length of the plan of 'b' for the same goal and seed,
+    i.e. (up to rounding) the same path"""
+    keys = [k for k in a if k in b and a[k]["success"] == 1 and b[k]["success"] == 1]
+    return sum(abs(a[k]["length"] - b[k]["length"]) < 1e-6 for k in keys) / len(keys) if keys else math.nan
+
+
+def ablation(args):
+    import numpy as np
+    import matplotlib.pyplot as plt
+    rows = load(args.csv or os.path.join(EXP_DIR, "ablation.csv"))
+    sets = [s for s in ("open", "near") if any(r["tag"] == s for r in rows)]
+    summary = {}
+    for s in sets:
+        by = {v: {} for v in ABLATION}
+        for r in rows:
+            v = variant(r, args.c) if r["tag"] == s else None
+            if v:
+                by[v][(r["goal_id"], r["seed"])] = r
+        missing = [v for v in ABLATION if not by[v]]
+        if missing:
+            raise SystemExit(f"goal set '{s}': no rows for {missing}")
+        base = by["baseline"]
+        print(f"\n=== {s} goals ({len(base)} plans per variant) ===")
+        print(f"{'variant':<30} {'success':>8} {'clearance [m]':>14} {'length [m]':>11} {'length/base':>12} "
+              f"{'rejected':>9} {'= RRT*':>7} {'= full':>7}")
+        summary[s] = {}
+        for v, label in ABLATION.items():
+            rs = by[v]
+            ok = [r for r in rs.values() if r["success"] == 1]
+            st = {
+                "success": len(ok) / len(rs),
+                "clearance": med([r["min_footprint_clearance"] for r in ok]),
+                "length": med([r["length"] for r in ok]),
+                "paired_length": med([r["length"] / base[k]["length"] for k, r in rs.items()
+                                      if r["success"] == 1 and base.get(k, {}).get("success") == 1]),
+                "rejection": med([r["rejection_ratio"] for r in rs.values()]),
+            }
+            summary[s][v] = st
+            print(f"{label:<30} {st['success']:>8.1%} {st['clearance']:>14.3f} {st['length']:>11.2f} "
+                  f"{st['paired_length']:>12.3f} {st['rejection']:>9.2%} {same_path(rs, base):>7.0%} "
+                  f"{same_path(rs, by['full']):>7.0%}")
+        d = summary[s]
+        print(f"clearance added by the cost term (full - CBF only):       "
+              f"{d['full']['clearance'] - d['cbf_only']['clearance']:+.3f} m")
+        print(f"clearance added by the CBF condition (full - cost only):  "
+              f"{d['full']['clearance'] - d['cost_only']['clearance']:+.3f} m")
+    print("\n'rejected': median share of the edges rejected by the CBF condition (for plain RRT* measured,"
+          " not enforced; 0 for 'cost term only' by construction).\n'= RRT*' / '= full': share of the"
+          " plans with the same path as plain RRT* / as Safe-CBF-RRT* for the same goal and seed.")
+
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 4.5))
+    x = np.arange(len(ABLATION))
+    width = 0.8 / len(sets)
+    for i, s in enumerate(sets):
+        off = (i - (len(sets) - 1) / 2) * width
+        ax1.bar(x + off, [summary[s][v]["clearance"] for v in ABLATION], width, label=f"{s} goals")
+        ax2.bar(x + off, [summary[s][v]["paired_length"] for v in ABLATION], width, label=f"{s} goals")
+    for ax, title in ((ax1, "median min footprint clearance [m]"),
+                      (ax2, "median length / length of plain RRT* (paired)")):
+        ax.set_xticks(x)
+        ax.set_xticklabels([ABLATION[v].replace(" (", "\n(") for v in ABLATION], fontsize=8)
+        ax.set_title(title)
+        ax.grid(axis="y", alpha=0.3)
+        ax.legend(fontsize=8)
+    top = max(summary[s][v]["paired_length"] for s in sets for v in ABLATION)
+    ax2.set_ylim(0.95, max(1.05, top + 0.02))
+    save(fig, args, "ablation.png")
+
+
+# ---------------------------------------------------------------------------------------------
+# psf (Section 5.2.1): the two safety functions side by side, with the obstacle centroids
+
+
+def psf(args):
+    import numpy as np
+    import matplotlib.pyplot as plt
+    from matplotlib.colors import ListedColormap
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from plot_benchmark import load_map
+
+    base_dir = args.csv or os.path.join(EXP_DIR, "psf")
+    if not os.path.isdir(base_dir):
+        raise SystemExit(f"{base_dir} not found - run the psf experiment first (README_EXPERIMENTS.md)")
+    stems = sorted({d.rsplit("_", 1)[0] for d in os.listdir(base_dir)
+                    if d.endswith(("_centroid", "_constant")) and os.path.isdir(os.path.join(base_dir, d))})
+    for stem in stems:
+        cdir, kdir = (os.path.join(base_dir, f"{stem}_{s}") for s in ("centroid", "constant"))
+        map_yaml = os.path.join(args.maps_dir, stem + ".yaml")
+        if not (os.path.isdir(cdir) and os.path.isdir(kdir) and os.path.exists(map_yaml)):
+            print(f"skipping {stem}: needs {cdir}, {kdir} and {map_yaml}")
+            continue
+        shown, extent = load_map(map_yaml)
+        h_c = np.loadtxt(os.path.join(cdir, "h.csv"), delimiter=",")
+        h_k = np.loadtxt(os.path.join(kdir, "h.csv"), delimiter=",")
+        ux = np.loadtxt(os.path.join(cdir, "u_x.csv"), delimiter=",")
+        uy = np.loadtxt(os.path.join(cdir, "u_y.csv"), delimiter=",")
+        with open(os.path.join(cdir, "centroids.csv"), newline="") as f:
+            cents = [(float(r["x"]), float(r["y"]), r["in_free_space"] == "1") for r in csv.DictReader(f)]
+
+        fig, axes = plt.subplots(1, 3, figsize=(19, 6.2))
+
+        def layers(ax, field, cmap, unit):
+            # inflated obstacles (field = 0) light grey, the field itself, the real obstacles black
+            ax.imshow(np.where(h_c <= 0, 1.0, np.nan), origin="lower", extent=extent,
+                      cmap=ListedColormap(["#d9d9d9"]), interpolation="nearest")
+            if field is not None:
+                im = ax.imshow(np.ma.masked_where(h_c <= 0, field), origin="lower", extent=extent,
+                               cmap=cmap, interpolation="nearest")
+                fig.colorbar(im, ax=ax, fraction=0.046, pad=0.02, label=unit)
+            ax.imshow(np.ma.masked_where(shown != 0, shown), origin="upper", extent=extent,
+                      cmap=ListedColormap(["black"]), interpolation="nearest")
+
+        def centroids(ax):
+            free = [(x, y) for x, y, f in cents if f]
+            inside = [(x, y) for x, y, f in cents if not f]
+            if free:
+                ax.plot(*zip(*free), "o", color="red", markeredgecolor="black", markersize=8,
+                        label="centroid in free space")
+            if inside:
+                ax.plot(*zip(*inside), "x", color="white", markeredgewidth=2, markersize=8,
+                        label="centroid inside the obstacle")
+            ax.legend(fontsize=7, loc="upper right")
+
+        layers(axes[0], h_c, "viridis", "h [m²]")
+        centroids(axes[0])
+        axes[0].set_title("centroid source: h")
+
+        layers(axes[1], None, None, None)
+        H, W = h_c.shape
+        res = (extent[1] - extent[0]) / W
+        step = max(1, W // 40)
+        rr, cc = np.mgrid[step // 2:H:step, step // 2:W:step]
+        keep = h_c[rr, cc] > 0
+        mag = np.hypot(ux[rr, cc], uy[rr, cc])[keep]
+        q = axes[1].quiver(extent[0] + (cc[keep] + 0.5) * res, extent[2] + (rr[keep] + 0.5) * res,
+                           ux[rr, cc][keep] / np.maximum(mag, 1e-9), uy[rr, cc][keep] / np.maximum(mag, 1e-9),
+                           mag, cmap="plasma", angles="xy", scale=45, width=0.003)
+        fig.colorbar(q, ax=axes[1], fraction=0.046, pad=0.02, label="|u| [m]")
+        centroids(axes[1])
+        axes[1].set_title("centroid source: guidance field u (direction; colour = |u|)")
+
+        layers(axes[2], h_k, "viridis", "h [m]")
+        axes[2].set_title("constant source: h")
+
+        for ax in axes:
+            ax.set_xlim(extent[0], extent[1])
+            ax.set_ylim(extent[2], extent[3])
+            ax.set_aspect("equal")
+            ax.set_xlabel("x [m]")
+        axes[0].set_ylabel("y [m]")
+        fig.suptitle(f"{stem}: inflated obstacles light grey, obstacles black", fontsize=10)
+        fig.tight_layout()
+        out = os.path.join(base_dir, f"psf_{stem}.png")
+        fig.savefig(out, dpi=150)
+        plt.close(fig)
+        n_free = sum(f for _, _, f in cents)
+        print(f"{stem}: {len(cents)} obstacles, {n_free} centroids in free space -> {out}")
+
+
 def save(fig, args, name):
     out = os.path.join(os.path.dirname(os.path.abspath(args.csv or os.path.join(EXP_DIR, "x.csv"))), name)
     fig.tight_layout()
@@ -290,9 +475,10 @@ def save(fig, args, name):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("hypothesis", choices=["h1", "h2", "h3", "h4"])
-    ap.add_argument("csv", nargs="?", help="results CSV (default: see above)")
-    ap.add_argument("--c", type=float, default=0.8, help="h1: the c value of the hypothesis")
+    ap.add_argument("hypothesis", choices=["h1", "h2", "h3", "h4", "ablation", "psf"])
+    ap.add_argument("csv", nargs="?", help="results CSV, or the directory for psf (default: see above)")
+    ap.add_argument("--c", type=float, default=0.8, help="h1, ablation: the c value of Safe-CBF-RRT*")
+    ap.add_argument("--maps-dir", default="maps", help="psf: directory with <map>.yaml")
     ap.add_argument("--min-gain", type=float, default=0.2, help="h1: required clearance gain [m]")
     ap.add_argument("--max-length", type=float, default=1.10, help="h1: allowed length ratio")
     ap.add_argument("--tol", type=float, default=0.02, help="h2: clearance tolerance of 'no worse' [m]")
@@ -300,7 +486,7 @@ def main():
     ap.add_argument("--significant", type=float, default=0.25, help="h3: 'significant' fraction of lost plans")
     ap.add_argument("--limit", type=float, default=1.0, help="h4: time limit [s]")
     args = ap.parse_args()
-    {"h1": h1, "h2": h2, "h3": h3, "h4": h4}[args.hypothesis](args)
+    {"h1": h1, "h2": h2, "h3": h3, "h4": h4, "ablation": ablation, "psf": psf}[args.hypothesis](args)
 
 
 if __name__ == "__main__":

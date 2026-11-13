@@ -31,6 +31,9 @@ namespace cbf_rrt_planner
         // number of detected obstacles
         size_t obstacleCount() const {return seg_result_.obstacles.size();}
 
+        // obstacles and their centroids c_i of the last generate()
+        const std::vector<Obstacle> & obstacles() const {return seg_result_.obstacles;}
+
         // h(x,y) in any point [m], interpolated between 4 points for RRT*
         double getH(double x, double y) const;
 

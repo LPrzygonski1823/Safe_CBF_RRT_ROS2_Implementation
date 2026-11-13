@@ -107,7 +107,7 @@ cbf-benchmark-plot results="src/cbf_rrt_planner/benchmark/results.csv" *args:
     python3 src/cbf_rrt_planner/tools/plot_benchmark.py {{results}} {{args}}
 
 # GOALS / RUNS from the environment override the defaults (20 / 10)
-# run one experiment of README_EXPERIMENTS.md offline (h1h2, h3, h4), e.g. `just cbf-exp h3`
+# run one experiment of README_EXPERIMENTS.md offline (h1h2, h3, h4, ablation, psf), e.g. `just cbf-exp h3`
 cbf-exp name *args: cbf-build _run-as-user
     #!/bin/bash
     set -e
@@ -115,9 +115,21 @@ cbf-exp name *args: cbf-build _run-as-user
         source /opt/ros/humble/setup.bash && source /workspace/install/setup.bash && \
         bash src/cbf_rrt_planner/tools/run_experiment.sh {{name}} {{args}}"
 
-# verdict, table and figure of one hypothesis (h1, h2, h3, h4), on the host (numpy, matplotlib)
+# verdict, table and figure of one experiment (h1, h2, h3, h4, ablation, psf), on the host (numpy, matplotlib)
 cbf-exp-analyze name *args:
     python3 src/cbf_rrt_planner/tools/analyze_experiments.py {{name}} {{args}}
+
+# record plan + driven trajectory of every path sent to the controller (Ctrl+C to stop), e.g. `just cbf-exp-record cbf`
+cbf-exp-record label *args: _run-as-user
+    #!/bin/bash
+    {{compose_cbf}} exec cbf-planner bash -c "\
+        source /opt/ros/humble/setup.bash && source /workspace/install/setup.bash && \
+        python3 src/cbf_rrt_planner/tools/record_execution.py --label {{label}} {{args}} \
+        --ros-args -p use_sim_time:=true"
+
+# figures + summary of the recorded runs, on the host (numpy, matplotlib, Pillow)
+cbf-exp-plot-execution map="maps/map_u.yaml" *args:
+    python3 src/cbf_rrt_planner/tools/plot_execution.py --map {{map}} {{args}}
 
 # interactive ROS 2 shell on the stack network (ros2 topic/node/tf debugging)
 cbf-shell: _run-as-user

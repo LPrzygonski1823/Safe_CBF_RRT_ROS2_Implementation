@@ -3,18 +3,25 @@
 This file describes the experiments of Chapter 5 of the thesis: what each one checks, how it
 decides whether a hypothesis holds, and the exact commands to run it. Hypotheses H1-H3 are
 verified offline with `cbf_benchmark`, the planner core without ROS. H4 is a timing measurement
-on the robot. The demonstration in Gazebo and on the physical robot, which the main thesis
-refers to, is described at the end. It is a demonstration and not a statistical test.
+on the robot. Two further offline runs give material for the thesis without testing a
+hypothesis: the ablation of the two safety mechanisms and the figures of the two safety
+functions. The demonstration in Gazebo and on the physical robot, which the main thesis refers
+to, is described in §7. It is a demonstration and not a statistical test; a recorder and a plot
+script turn it into figures and a small table.
 
-| Hypothesis | Experiment | Run | Analyse | Figure |
-|---|---|---|---|---|
-| H1: `c = 0.8` gives ≥ 0.2 m more footprint clearance for ≤ 10% more length; monotonic in `c` | A | `just cbf-exp h1h2` | `just cbf-exp-analyze h1` | `h1.png` |
-| H2: `constant` source is no worse than `centroid` and ≥ 3× faster | A (same data) | (as above) | `just cbf-exp-analyze h2` | `h2.png` |
-| H3: matching the clearance by inflation loses near-obstacle goals | B | `just cbf-exp h3` | `just cbf-exp-analyze h3` | `h3.png` |
-| H4: PSF and planning each < 1 s on the onboard computer | C | `just -f justfile.jazzy cbf-real-exp-h4` | `python3 .../analyze_experiments.py h4` | - |
+| Hypothesis / purpose | Thesis | Experiment | Run | Analyse | Figure |
+|---|---|---|---|---|---|
+| H1: `c = 0.8` gives ≥ 0.2 m more footprint clearance for ≤ 10% more length; monotonic in `c` | 5.3 | A (§2) | `just cbf-exp h1h2` | `just cbf-exp-analyze h1` | `h1.png` |
+| H2: `constant` source is no worse than `centroid` and ≥ 3× faster | 5.3 | A (same data) | (as above) | `just cbf-exp-analyze h2` | `h2.png` |
+| H3: matching the clearance by inflation loses near-obstacle goals | 5.3 | B (§3) | `just cbf-exp h3` | `just cbf-exp-analyze h3` | `h3.png` |
+| H4: PSF and planning each < 1 s on the onboard computer | 5.4 | C (§4) | `just -f justfile.jazzy cbf-real-exp-h4` | `python3 .../analyze_experiments.py h4` | - |
+| which mechanism gives the clearance: cost term or CBF condition | 5.3.2 | D (§5) | `just cbf-exp ablation` | `just cbf-exp-analyze ablation` | `ablation.png` |
+| the two safety functions and the obstacle centroids | 5.2.1 | E (§6) | `just cbf-exp psf` | `just cbf-exp-analyze psf` | `psf/psf_<map>.png` |
+| planned vs driven path in Gazebo / on the robot | 5.4.2 | demonstration (§7) | `just cbf-exp-record LABEL` | `just cbf-exp-plot-execution` | `execution/<run>.png` |
 
-Results go to `src/cbf_rrt_planner/benchmark/experiments/` (`h1h2.csv`, `h3.csv`, `h4.csv`, a
-`*_paths.csv` with the path vertices for each, and the figures).
+Results go to `src/cbf_rrt_planner/benchmark/experiments/` (`h1h2.csv`, `h3.csv`, `h4.csv`,
+`ablation.csv`, a `*_paths.csv` with the path vertices for each, `psf/`, `execution/` and the
+figures).
 
 ---
 
@@ -54,10 +61,11 @@ just cbf-build
 just cbf-benchmark --help        # lists the benchmark options
 ```
 
-The analysis runs on the host and needs `numpy` and `matplotlib`:
+The analysis runs on the host and needs `numpy` and `matplotlib` (the map figures also need
+`Pillow`):
 
 ```bash
-python3 -c "import numpy, matplotlib"   # otherwise: pip install numpy matplotlib
+python3 -c "import numpy, matplotlib, PIL"   # otherwise: pip install numpy matplotlib pillow
 ```
 
 ### 1.3 Quick trial run (optional)
@@ -85,8 +93,8 @@ sudo rm -rf src/cbf_rrt_planner/benchmark/experiments
   hypothesis uses it.
 - **Statistics.** Medians over the successful plans. No statistical tests: each hypothesis has
   a fixed numerical threshold, and the analysis prints the measured value next to it.
-- **Fresh files.** `h1h2.csv` and `h3.csv` must not mix two executions. The script refuses to
-  start if the file already exists. Move it away (or delete it) to repeat an experiment:
+- **Fresh files.** `h1h2.csv`, `h3.csv` and `ablation.csv` must not mix two executions. The
+  script refuses to start if the file already exists. Move it away (or delete it) to repeat an experiment:
   `sudo mv src/cbf_rrt_planner/benchmark/experiments src/cbf_rrt_planner/benchmark/experiments_old`.
 
 ---
@@ -199,7 +207,7 @@ in every batch (`--goal-inflation` fixes the map they are drawn on).
 
 If no radius up to 0.8 m reaches the target, the analysis says so (`NOT VERIFIED`). Then extend
 the radius list in `src/cbf_rrt_planner/tools/run_experiment.sh` and the `--goal-inflation`
-value of the `match` set (the start must stay free, see §5).
+value of the `match` set (the start must stay free, see §8.4).
 
 ### 3.3 Commands
 
@@ -215,8 +223,10 @@ just cbf-exp-analyze h3           # table per radius, verdict, experiments/h3.pn
 - `h3.png`, left: clearance of plain RRT* vs radius, with Safe-CBF-RRT* as a horizontal line.
   Right: reachability of the `near` goals vs radius. The dotted vertical line is the
   comparable radius.
-- A goal closer to a wall than the inflation radius is unreachable by definition. This is the
-  mechanism the hypothesis describes, not an artefact; say so in the thesis. The `no_path`
+- A goal closer to a wall than the inflation radius is unreachable by definition, so for the
+  `near` set H3 follows from the construction once the comparable radius exceeds 0.40 m. This is
+  the mechanism the hypothesis describes, not an artefact; present it in the thesis as such
+  ("by definition"), with the measured comparable radius as the actual result. The `no_path`
   column shows the less obvious effect: passages that close although the goal is free.
 - The clearance of Safe-CBF-RRT* is measured on open goals only. On the `near` goals the
   minimum clearance is set by the goal itself and says nothing about the rest of the path.
@@ -234,9 +244,9 @@ covers the RRT* search (and smoothing, if enabled), not the PSF.
 H4 is confirmed on a machine if the median PSF time **and** the median plan time are both
 **< 1 s**. The maximum plan time is printed as well.
 
-The PSF time grows with the number of map cells and with the iterations the SOR solver needs. On
-a laptop the 466 × 466 simulation map takes about 1.2 s. The result on the robot depends on the
-size of the robot's map, so state the map size next to the result in the thesis.
+The PSF time grows with the number of map cells and with the iterations the SOR solver needs,
+so it depends on the map more than on the machine. State the map size (cells and resolution)
+next to the result in the thesis; the robot's experiment map is the one that counts for H4.
 
 ### 4.2 Reference run on the laptop (simulation map)
 
@@ -304,46 +314,237 @@ just cbf-exp-analyze h4
 
 ---
 
-## 5. Demonstration in Gazebo and on the robot (main thesis)
+## 5. Experiment D: ablation of the two safety mechanisms (thesis 5.3.2)
 
-The main thesis states that the extra clearance matters when a real controller follows the path.
-This is shown, not tested statistically: a few runs, recorded and compared visually.
+### 5.1 Idea
 
-Suggested protocol, identical in simulation and on the robot:
+Safe-CBF-RRT* has two mechanisms that can push a path away from obstacles: the **cost term**
+(edge cost `L · (c + (1 − c) · mean(1/h))`, active for `c < 1`) and the **CBF condition**
+(an edge is rejected if `∇h · v < −κ h`). The ablation switches them on one at a time, with
+everything else equal, to show which of them produces the clearance:
 
-1. Choose 2-3 goals where plain RRT* passes close to a corner, e.g. by looking at the path plots
-   of experiment A (`just cbf-benchmark-plot`, see `README.md` §6.3), or at the planned paths in
-   Foxglove.
-2. For each goal, plan and drive it with plain RRT* (`enable_cbf false`) and with Safe-CBF-RRT*
-   (`enable_cbf true`, `safety_weight_c 0.8`), 3 times each, returning the robot to the same
-   start in between. Set `seed` to a fixed value so the same configuration gives the same plan.
-3. Record the planned path (`/planned_path`) and the driven trajectory (TF `map → base_link` or
-   `/odometry/filtered`) in Foxglove, or with `ros2 bag record`.
-4. Report, per run: goal reached yes/no, contact with an obstacle yes/no (Gazebo: visible
-   collision; robot: observation), and a figure with the planned and driven paths over the map.
+| Variant | `c` | `κ` | Cost term | CBF condition |
+|---|---|---|---|---|
+| plain RRT* | - | - | off | off (measured only) |
+| CBF condition only | 1.0 | 5 | off (`c = 1` gives the plain length cost) | on |
+| cost term only | 0.8 | 10⁶ | on | practically off (`v / κ` ≈ 0, no edge is rejected) |
+| Safe-CBF-RRT* | 0.8 | 5 | on | on |
 
-Commands:
+It is not a hypothesis test and has no verdict. The table and the figure are the result.
 
-- simulation: `SIM_GUIDE.md` §7.2 (start with `just cbf-up`, freeze the map with
-  `just cbf-refresh-map`, change parameters with `ros2 param set /planner_node ...`, send goals
-  with `just cbf-goal X Y`);
-- robot: `REAL_GUIDE.md` §8 (`just -f justfile.jazzy cbf-real`, `cbf-real-refresh-map`,
-  `cbf-real-goal X Y`, parameters in §8.2).
+### 5.2 What it runs
+
+`constant` source, inflation 0.22 m, two goal sets:
+
+- `open`: 20 random goals, drawn exactly as in experiment A (the same goals as there);
+- `near`: 20 random goals 0.25-0.40 m from the nearest obstacle, as in experiment B.
+
+For each set two batches with the same goals and seeds: `--c 0.8,1.0 --baseline` (plain RRT*,
+CBF condition only, Safe-CBF-RRT*) and `--c 0.8 --set kappa=1e6` (cost term only). In total
+2 × 20 × 10 × 4 = 1600 plans, about **20 minutes**.
+
+### 5.3 Commands
+
+```bash
+just cbf-exp ablation             # ~20 min, writes experiments/ablation.csv
+just cbf-exp-analyze ablation     # tables per goal set, experiments/ablation.png
+```
+
+### 5.4 Reading the output
+
+For each goal set and variant the table gives: success rate, median footprint clearance, median
+length, median paired length ratio (to plain RRT* with the same goal and seed), median share of
+rejected edges, and the share of plans whose path is identical to the plain RRT* path (`= RRT*`)
+or to the Safe-CBF-RRT* path (`= full`) for the same goal and seed. Two lines below the table
+give the clearance each mechanism adds on top of the other:
+
+- `full − CBF only`: what the cost term adds;
+- `full − cost only`: what the CBF condition adds.
+
+How to read it:
+
+- Same path = same length to 10⁻⁶ m. A variant that gives the same path as another one in most
+  plans has no effect of its own.
+- With the current parameters `v / κ = 0.12 m` is small compared to the clearance the cost term
+  produces, so the CBF condition rejects only about 1-2% of the edges. A small trial run gave
+  `cost only` = `full` in practically every plan, i.e. the clearance comes from the cost term and
+  the CBF condition acts as a constraint that is rarely active. State this plainly in the thesis.
+  It does not make the condition useless: it guarantees the property it was designed for, it
+  just does not shape the path.
+- `rejected` for plain RRT* is measured (what the condition would have rejected), not enforced.
+  For `cost term only` it is 0 by construction.
+- On the `near` goals the minimum clearance is limited by the goal itself (the robot has to stand
+  0.25-0.40 m from a wall), so the clearance differences there are small. Use the `open` set for
+  the clearance comparison and the `near` set to show that no variant loses goals.
 
 ---
 
-## 6. Reference
+## 6. Experiment E: figures of the two safety functions (thesis 5.2.1)
 
-### 6.1 Files
+### 6.1 What it runs
+
+For `maps/map.yaml` and `maps/map_u.yaml`, and for both PSF sources, the benchmark generates the
+PSF with the planning setup of the YAML (inflation 0.22 m), plans nothing (`--random-goals 0`),
+and exports with `--export-psf DIR`:
+
+- `h.csv`, `u_x.csv`, `u_y.csv`: the fields on the planning grid (row 0 = bottom of the map; for
+  the `constant` source `u` is zero);
+- `centroids.csv`: per segmented obstacle its centroid, number of cells and whether the centroid
+  lies in free space (`in_free_space`). This is what the `centroid` source uses as point
+  sources, and why it behaves badly on U-shaped or wall-like obstacles.
+
+### 6.2 Commands
+
+```bash
+just cbf-exp psf                  # seconds, writes experiments/psf/<map>_<source>/
+just cbf-exp-analyze psf          # experiments/psf/psf_map.png, psf_map_u.png
+```
+
+Another map: `just cbf-exp psf` runs both maps of the repository; for a single other map run the
+benchmark directly, e.g.
+`just cbf-benchmark --map maps/robot/map.yaml --set psf_source=centroid --random-goals 0 --export-psf src/cbf_rrt_planner/benchmark/experiments/psf/map_centroid`
+(and the same with `constant` and `map_constant`), then
+`just cbf-exp-analyze psf --maps-dir maps/robot`. The directory names must be
+`<map yaml name>_centroid` and `<map yaml name>_constant`.
+
+### 6.3 Reading the output
+
+One figure per map, three panels:
+
+1. `centroid` source, `h` [m²], with the obstacle centroids: red dot = centroid in free space,
+   white cross = centroid inside the obstacle.
+2. `centroid` source, the guidance field `u`: arrows show the direction, the colour its
+   magnitude. Where a centroid lies in free space, `u` is organised around that point instead of
+   following the boundary of the obstacle.
+3. `constant` source, `h` [m].
+
+Inflated obstacles (where `h = 0`) are light grey, the real obstacles black. The analysis prints
+how many centroids lie in free space. On `map_u` every obstacle is U-shaped or a long wall, so
+all centroids fall outside the obstacles. On `map.yaml` none do. This contrast is the argument
+for the `constant` source.
+
+---
+
+## 7. Demonstration in Gazebo and on the robot (main thesis, thesis 5.4.2)
+
+The main thesis states that the extra clearance matters when a real controller follows the path.
+This is shown, not tested statistically: a few runs, recorded and compared.
+
+### 7.1 What is recorded and how
+
+`tools/record_execution.py` runs in the planner container next to `planner_node`:
+
+- every new `/planned_path` starts a run `n` and is saved as `<label>_<n>_plan.csv`;
+- while the `FollowPath` goal is executing (`/follow_path/_action/status`), the TF
+  `map → base_link` is sampled at 20 Hz into `<label>_<n>_driven.csv` (`t, x, y, yaw`).
+
+Files go to `src/cbf_rrt_planner/benchmark/experiments/execution/`. Numbering continues after a
+restart of the recorder, so earlier runs are never overwritten. Use one label per
+configuration, e.g. `baseline` and `cbf`.
+
+`tools/plot_execution.py` (host) then gives for every run a figure over the map (plan, driven
+trajectory, robot footprint with the **recorded** heading every 0.3 m, the pose with the
+smallest clearance in red) and a row of `execution/summary.csv`:
+
+| Column | Meaning |
+|---|---|
+| `plan_fp_clearance` | min footprint clearance of the plan (footprint along the path tangent), the same metric as in experiments A-D |
+| `driven_fp_clearance` | the same for the driven poses with their recorded heading |
+| `max_dev`, `mean_dev` | distance of the driven positions from the plan polyline [m] |
+| `goal_error` | distance of the last driven position from the end of the plan [m] |
+| `plan_length`, `driven_length`, `duration` | [m], [m], [s] |
+
+The clearance is computed by a Python port of the C++ metric (map without inflation, unknown
+cells count as obstacles). On benchmark paths it agrees with `min_footprint_clearance` of
+`cbf_benchmark` to 0.1 mm.
+
+**Caveat.** The driven trajectory is the robot's own pose estimate (TF), not ground truth. In
+Gazebo, with the static map, `map → odom` is fixed, so the trajectory is the EKF odometry; on the
+robot it is the localisation estimate. The deviation therefore measures how well the
+controller tracked the plan, not the localisation error, and `driven_fp_clearance` is the
+clearance the robot *believed* it had. Real contact must be observed (Gazebo: visible
+collision; robot: observation or video). Say this in the thesis next to the figures.
+
+### 7.2 Protocol (identical in simulation and on the robot)
+
+1. Choose 2-3 goals where plain RRT* passes close to a corner, e.g. from the path plots of
+   experiment A (`just cbf-benchmark-plot`, see `README.md` §6.3) or from the planned paths in
+   Foxglove.
+2. For each goal, plan and drive it with plain RRT* (`enable_cbf false`, label `baseline`) and
+   with Safe-CBF-RRT* (`enable_cbf true`, `safety_weight_c 0.8`, label `cbf`), 3 times each,
+   returning the robot to the same start in between. Set `seed` to a fixed value, so the same
+   configuration gives the same plan from the same start.
+3. Report per run: goal reached yes/no, contact yes/no, the row of `summary.csv`, and the figure.
+
+### 7.3 Commands in the simulation
+
+The simulation map is `MAP_YAML` of `.env` (currently `map_u.yaml`).
+
+```bash
+just cbf-up                       # terminal 1: whole stack, follows the logs
+just cbf-refresh-map              # terminal 2: once the map is up; wait for "PSF ready" in the logs
+
+# terminal 3: the recorder, one label per configuration; Ctrl-C to stop
+just cbf-exp-record baseline
+
+# terminal 2: configuration + goal
+docker exec rosbot-xl-autonomy-foxglove-cbf-planner-1 bash -c 'source /opt/ros/humble/setup.bash && \
+  ros2 param set /planner_node enable_cbf false && ros2 param set /planner_node seed 7'
+just cbf-goal -6.98 -3.38         # wait until the robot arrives, drive it back, repeat
+```
+
+Then stop the recorder, start it with the other label and switch the planner:
+
+```bash
+just cbf-exp-record cbf           # terminal 3
+docker exec rosbot-xl-autonomy-foxglove-cbf-planner-1 bash -c 'source /opt/ros/humble/setup.bash && \
+  ros2 param set /planner_node enable_cbf true && ros2 param set /planner_node safety_weight_c 0.8'
+just cbf-goal -6.98 -3.38
+```
+
+Analysis on the host:
+
+```bash
+just cbf-exp-plot-execution maps/map_u.yaml          # all runs; add --label cbf for one label
+```
+
+### 7.4 Commands on the robot
+
+The same with the robot recipes (`REAL_GUIDE.md` §8): `just -f justfile.jazzy cbf-real`,
+`cbf-real-refresh-map`, parameters as in `REAL_GUIDE.md` §8.2, goals with `cbf-real-goal X Y`,
+and the recorder (on the robot, in a second SSH session):
+
+```bash
+just -f justfile.jazzy cbf-real-record baseline      # use_sim_time false; Ctrl-C to stop
+```
+
+Copy the runs and the map to the laptop **before the next `cbf-real-sync`** (it mirrors the
+laptop with `--delete`), then plot there:
+
+```bash
+mkdir -p maps/robot src/cbf_rrt_planner/benchmark/experiments/execution_robot
+scp husarion@ROBOT_IP:/home/husarion/rosbot-xl-autonomy-foxglove/maps/map.{yaml,pgm} maps/robot/
+scp 'husarion@ROBOT_IP:/home/husarion/rosbot-xl-autonomy-foxglove/src/cbf_rrt_planner/benchmark/experiments/execution/*' \
+    src/cbf_rrt_planner/benchmark/experiments/execution_robot/
+just cbf-exp-plot-execution maps/robot/map.yaml src/cbf_rrt_planner/benchmark/experiments/execution_robot
+```
+
+---
+
+## 8. Reference
+
+### 8.1 Files
 
 | File | Role |
 |---|---|
 | `src/cbf_rrt_planner/src/cbf_benchmark.cpp` | offline benchmark (`just cbf-benchmark --help`) |
 | `src/cbf_rrt_planner/tools/run_experiment.sh` | the batches of each experiment: `c` values, radii, goal sets, numbers of goals and seeds |
 | `src/cbf_rrt_planner/tools/analyze_experiments.py` | verdicts, tables and figures (`--help` lists the thresholds) |
-| `src/cbf_rrt_planner/benchmark/experiments/` | results and figures |
+| `src/cbf_rrt_planner/tools/record_execution.py` | recorder of plan + driven trajectory (ROS 2 node, runs in the container) |
+| `src/cbf_rrt_planner/tools/plot_execution.py` | figures and `summary.csv` of the recorded runs (host) |
+| `src/cbf_rrt_planner/benchmark/experiments/` | results and figures; `psf/` and `execution/` subdirectories |
 
-### 6.2 Benchmark options used by the experiments
+### 8.2 Benchmark options used by the experiments
 
 | Option | Effect |
 |---|---|
@@ -352,10 +553,11 @@ Commands:
 | `--goal-inflation R` | draw the goals on the map inflated by `R` instead of the planning radius, so batches with different radii get the same goals |
 | `--goal-clearance MIN,MAX` | keep only goals whose distance to the nearest obstacle (map without inflation) is in `[MIN, MAX]` |
 | `--psf-repeats N` | generate the PSF `N` times, record the median time |
-| `--set KEY=VALUE` | override one planner parameter for this batch |
-| `--tag TEXT` | label stored in every row (`match` / `near` in H3, the machine in H4) |
+| `--export-psf DIR` | write `h`, `u` and the obstacle centroids to `DIR` (experiment E) |
+| `--set KEY=VALUE` | override one planner parameter for this batch (`kappa=1e6` in experiment D) |
+| `--tag TEXT` | label stored in every row (`match` / `near` in H3, the machine in H4, `open` / `near` in D) |
 
-### 6.3 Changing an experiment
+### 8.3 Changing an experiment
 
 - Other `c` values, radii or goal bands: edit `run_experiment.sh`. The analysis reads whatever
   values are in the CSV.
@@ -368,11 +570,14 @@ Commands:
 - Another result file: pass it after the hypothesis, e.g.
   `just cbf-exp-analyze h3 path/to/h3.csv`. The figure is written next to it.
 
-### 6.4 Troubleshooting
+### 8.4 Troubleshooting
 
 | Message | Cause and fix |
 |---|---|
 | `error: .../h1h2.csv already exists` | a previous execution; move the `experiments/` directory away (§1.4) |
+| `goal set 'near': no rows for [...]` (ablation) | `ablation.csv` is incomplete (interrupted run); move it away and re-run |
+| recorder prints nothing after `plan ... saved` | `FollowPath` never started: controller_server not running or the goal was rejected (planner logs) |
+| recorder: `no TF map -> base_link` | localisation not running or wrong `use_sim_time`; check with `cbf-real-check` / `tf2_echo map base_link` |
 | `error: start (...) is within the inflation radius` | the start is not free on this map or radius; pass `--start X,Y` |
 | `the start is not free on the map the goals are drawn on` | `--goal-inflation` is too large for the start; lower it or move the start |
 | `warning: only N reachable goal cells ...` | fewer goals than requested exist in the band; widen `--goal-clearance` or lower `--min-goal-dist` |

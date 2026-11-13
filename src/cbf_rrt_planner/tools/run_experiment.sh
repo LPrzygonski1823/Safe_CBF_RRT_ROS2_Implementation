@@ -1,7 +1,7 @@
 #!/bin/bash
 # Runs the cbf_benchmark batches of one experiment of README_EXPERIMENTS.md.
 #
-#   run_experiment.sh h1h2|h3|h4 [extra cbf_benchmark options, e.g. --map maps/robot/map.yaml --start 1,0]
+#   run_experiment.sh h1h2|h3|h4|ablation|psf [extra cbf_benchmark options, e.g. --map maps/robot/map.yaml]
 #
 # Environment (all optional):
 #   BENCH    benchmark command (default: ros2 run cbf_rrt_planner cbf_benchmark)
@@ -19,7 +19,7 @@ OUT_DIR="${OUT_DIR:-src/cbf_rrt_planner/benchmark/experiments}"
 GOALS="${GOALS:-20}"
 RUNS="${RUNS:-10}"
 
-# h1h2 and h3 compare batches with each other, so a file must not mix two executions
+# h1h2, h3 and ablation compare batches with each other, so a file must not mix two executions
 fresh() {
     if [ -e "$1" ]; then
         echo "error: $1 already exists - move it away or set OUT_DIR to start a new execution" >&2
@@ -61,8 +61,37 @@ case "$exp" in
         $BENCH "$@" --set psf_source=constant --c 0.8 --random-goals 10 --runs 3 --psf-repeats 10 \
             --out "$OUT_DIR/h4.csv" --tag "${TAG:-laptop}"
         ;;
+    ablation)
+        # four variants on the same goals and seeds, on open goals and on goals next to walls:
+        #   first batch:  full (c = 0.8), cbf_only (c = 1.0: cost = length) and plain RRT*
+        #   second batch: cost_only (c = 0.8, kappa = 1e6: the CBF condition rejects no edge)
+        fresh "$OUT_DIR/ablation.csv"
+        for set in open near; do
+            if [ "$set" = open ]; then
+                goal_args=()
+            else
+                goal_args=(--goal-clearance 0.25,0.40)
+            fi
+            common=("$@" --set psf_source=constant --set inflation=true --set inflation_robot_size=0.22
+                    "${goal_args[@]}" --random-goals "$GOALS" --runs "$RUNS"
+                    --out "$OUT_DIR/ablation.csv" --tag "$set")
+            $BENCH "${common[@]}" --c 0.8,1.0 --baseline
+            $BENCH "${common[@]}" --c 0.8 --set kappa=1e6
+        done
+        ;;
+    psf)
+        # PSF fields of both sources on the bundled map and on the map with U-shaped obstacles,
+        # nothing is planned
+        for map in maps/map.yaml maps/map_u.yaml; do
+            stem=$(basename "$map" .yaml)
+            for src in centroid constant; do
+                $BENCH "$@" --map "$map" --set psf_source=$src --random-goals 0 \
+                    --export-psf "$OUT_DIR/psf/${stem}_${src}"
+            done
+        done
+        ;;
     *)
-        echo "usage: $0 h1h2|h3|h4 [extra cbf_benchmark options]" >&2
+        echo "usage: $0 h1h2|h3|h4|ablation|psf [extra cbf_benchmark options]" >&2
         exit 1
         ;;
 esac

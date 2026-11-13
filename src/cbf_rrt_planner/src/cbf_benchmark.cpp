@@ -51,6 +51,8 @@ const char * kUsage =
   "  --goal-clearance MIN,MAX  keep only drawn goals whose distance to the nearest obstacle of\n"
   "                      the map without inflation is in [MIN, MAX] [m]\n"
   "  --psf-repeats N     generate the PSF N times and record the median time (default 1)\n"
+  "  --export-psf DIR    write h.csv, u_x.csv, u_y.csv and centroids.csv of the PSF to DIR;\n"
+  "                      with --random-goals 0 nothing is planned\n"
   "  --runs N            planner seeds per goal and configuration (default 10)\n"
   "  --seed S            first planner seed (default 1)\n"
   "  --start X,Y         start position in map coordinates (default 0,0)\n"
@@ -74,6 +76,7 @@ struct Options
   double goal_clearance_min = -1.0;  // < 0: no clearance filter
   double goal_clearance_max = -1.0;
   int psf_repeats = 1;
+  std::string export_psf_dir;
   int runs = 10;
   long seed = 1;
   double start_x = 0.0;
@@ -127,6 +130,7 @@ Options parseArgs(int argc, char ** argv)
       o.goal_clearance_max = band[1];
     }
     else if (a == "--psf-repeats") {o.psf_repeats = std::stoi(next());}
+    else if (a == "--export-psf") {o.export_psf_dir = next();}
     else if (a == "--runs") {o.runs = std::stoi(next());}
     else if (a == "--seed") {o.seed = std::stol(next());}
     else if (a == "--start") {
@@ -366,6 +370,21 @@ int run(const Options & opt)
   if (psf.source() == PsfSource::Constant) {std::cout << ", f0 = " << psf.constantSource() << " 1/m";}
   std::cout << ")\n";
 
+  namespace fs = std::filesystem;
+  if (!opt.export_psf_dir.empty()) {
+    fs::create_directories(opt.export_psf_dir);
+    psf.exportToCsv(opt.export_psf_dir);
+    // in_free_space = 1: the centroid of an obstacle (after inflation) lies outside of it
+    std::ofstream cf(opt.export_psf_dir + "/centroids.csv");
+    cf << "id,x,y,cells,in_free_space\n";
+    for (size_t i = 0; i < psf.obstacles().size(); ++i) {
+      const Obstacle & ob = psf.obstacles()[i];
+      cf << i << "," << ob.centroid_x << "," << ob.centroid_y << "," << ob.cells.size() << ","
+         << (checker.isPointFree(ob.centroid_x, ob.centroid_y) ? 1 : 0) << "\n";
+    }
+    std::cout << "PSF fields and centroids written to " << opt.export_psf_dir << "\n";
+  }
+
   ClearanceParams clearance_params;
   clearance_params.footprint_length = P.d("footprint_length");
   clearance_params.footprint_width = P.d("footprint_width");
@@ -386,6 +405,10 @@ int run(const Options & opt)
     goal_clearances.push_back(pointClearance(raw_map, goals[g].first, goals[g].second, clearance_params));
     std::printf("goal %zu: %.3f, %.3f (%.2f m from the nearest obstacle)\n",
                 g, goals[g].first, goals[g].second, goal_clearances[g]);
+  }
+  if (goals.empty()) {
+    std::cout << "no goals - nothing to plan\n";
+    return 0;
   }
 
   std::vector<Config> configs;
@@ -408,7 +431,6 @@ int run(const Options & opt)
   base.nominal_velocity = P.d("nominal_velocity");
   base.occupied_threshold = threshold;
 
-  namespace fs = std::filesystem;
   fs::path out(opt.out_path);
   std::string paths_path =
     (out.parent_path() / (out.stem().string() + "_paths" + out.extension().string())).string();

@@ -1,6 +1,11 @@
 cmake_minimum_required(VERSION 3.8)
 project(cbf_rrt_planner)
 
+# the just recipes pass Release; this covers a plain `colcon build` without --cmake-args
+if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
+  set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
+endif()
+
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(nav_msgs REQUIRED)

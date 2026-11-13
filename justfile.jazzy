@@ -140,6 +140,14 @@ cbf-real-exp-h4 map="maps/map.yaml" *args: cbf-real-build _run-as-user
         source /opt/ros/\$ROS_DISTRO/setup.bash && source /workspace/install/setup.bash && \
         bash src/cbf_rrt_planner/tools/run_experiment.sh h4 --map {{map}} {{args}}"
 
+# [robot] record plan + driven trajectory (TF map -> base_link) of every path sent to the controller (Ctrl+C to stop)
+cbf-real-record label *args: _run-as-user
+    #!/bin/bash
+    {{compose}} exec cbf-planner bash -c "\
+        source /opt/ros/\$ROS_DISTRO/setup.bash && source /workspace/install/setup.bash && \
+        python3 src/cbf_rrt_planner/tools/record_execution.py --label {{label}} {{args}} \
+        --ros-args -p use_sim_time:=false"
+
 # interactive ROS 2 shell
 cbf-real-shell: _run-as-user
     #!/bin/bash
