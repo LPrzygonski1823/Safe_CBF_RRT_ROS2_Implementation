@@ -136,7 +136,7 @@ cbf-real-nav-logs: _run-as-user
 cbf-real-exp-h4 map="maps/map.yaml" *args: cbf-real-build _run-as-user
     #!/bin/bash
     set -e
-    {{compose}} run --rm --no-deps -e TAG=robot cbf-planner bash -c "\
+    {{compose}} run --rm --no-deps -e TAG=robot -e PSF cbf-planner bash -c "\
         source /opt/ros/\$ROS_DISTRO/setup.bash && source /workspace/install/setup.bash && \
         bash src/cbf_rrt_planner/tools/run_experiment.sh h4 --map {{map}} {{args}}"
 

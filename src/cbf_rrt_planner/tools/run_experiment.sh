@@ -9,6 +9,7 @@
 #   GOALS    goals per batch (default 20)
 #   RUNS     seeds per goal and configuration (default 10)
 #   TAG      label of the machine, h4 only (default laptop)
+#   PSF      PSF source, h4 only (default constant, the one H4 is about)
 # The extra options go first, so the settings of the experiment itself always win.
 set -e
 
@@ -58,7 +59,7 @@ case "$exp" in
         ;;
     h4)
         # timing only: few plans, but the PSF is generated 10 times
-        $BENCH "$@" --set psf_source=constant --c 0.8 --random-goals 10 --runs 3 --psf-repeats 10 \
+        $BENCH "$@" --set psf_source="${PSF:-constant}" --c 0.8 --random-goals 10 --runs 3 --psf-repeats 10 \
             --out "$OUT_DIR/h4.csv" --tag "${TAG:-laptop}"
         ;;
     ablation)

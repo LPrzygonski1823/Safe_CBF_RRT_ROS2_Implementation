@@ -255,6 +255,16 @@ just cbf-exp h4                   # under a minute, tag "laptop"
 just cbf-exp-analyze h4
 ```
 
+For comparison the same measurement with the `centroid` source (not part of H4; the analysis
+shows it as a separate block, one per machine and source):
+
+```bash
+PSF=centroid just cbf-exp h4      # on the robot: PSF=centroid just -f justfile.jazzy cbf-real-exp-h4
+```
+
+`--set psf_source=...` after the experiment name has no effect: the script sets the source
+itself, after the extra options.
+
 ### 4.3 Run on the robot (experiment map)
 
 1. Sync the code from the laptop and log in (see `REAL_GUIDE.md` for the first setup):

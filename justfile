@@ -111,7 +111,7 @@ cbf-benchmark-plot results="src/cbf_rrt_planner/benchmark/results.csv" *args:
 cbf-exp name *args: cbf-build _run-as-user
     #!/bin/bash
     set -e
-    {{compose_cbf}} run --rm --no-deps -e GOALS -e RUNS -e TAG cbf-planner bash -c "\
+    {{compose_cbf}} run --rm --no-deps -e GOALS -e RUNS -e TAG -e PSF cbf-planner bash -c "\
         source /opt/ros/humble/setup.bash && source /workspace/install/setup.bash && \
         bash src/cbf_rrt_planner/tools/run_experiment.sh {{name}} {{args}}"
 

@@ -267,22 +267,24 @@ def h3(args):
 
 
 # ---------------------------------------------------------------------------------------------
-# H4: computation time, one group per machine (--tag of the batch)
+# H4: computation time, one group per machine (--tag of the batch) and PSF source
 
 
 def h4(args):
     rows = load(args.csv or os.path.join(EXP_DIR, "h4.csv"))
-    for tag in sorted({r["tag"] for r in rows}):
-        rs = [r for r in rows if r["tag"] == tag]
+    for tag, src in sorted({(r["tag"], r["psf_source"]) for r in rows}):
+        rs = [r for r in rows if r["tag"] == tag and r["psf_source"] == src]
         t_psf = psf_time(rs)
         plans = [r["plan_time_s"] for r in rs]
         t_plan = med(plans)
         ok = t_psf < args.limit and t_plan < args.limit
-        print(f"\n=== {tag} (map {rs[0]['map']}, psf_source {rs[0]['psf_source']}, "
+        print(f"\n=== {tag}, psf_source {src} (map {rs[0]['map']}, "
               f"{rs[0]['max_iterations']} iterations, {len(plans)} plans) ===")
         print(f"PSF generation: median {t_psf:.3f} s")
         print(f"planning:       median {t_plan:.3f} s, max {max(plans):.3f} s")
-        print(f"-> H4 on {tag}: {verdict(ok)} (limit {args.limit} s)")
+        # H4 is stated for the constant source; other sources are shown for comparison
+        label = f"H4 on {tag}" if src == "constant" else f"{src} (comparison, not H4)"
+        print(f"-> {label}: {verdict(ok)} (limit {args.limit} s)")
 
 
 # ---------------------------------------------------------------------------------------------
